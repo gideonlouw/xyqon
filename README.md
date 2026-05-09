@@ -9,9 +9,7 @@ XYQON is a small Rust blockchain project with:
 - Dynamic mining difficulty targeting 30-second blocks
 - Mempool for pending signed transactions
 - JSON wallet files
-- Simple TCP peer-to-peer block sharing
-
-This is an early learning/project prototype. It is not production-ready cryptocurrency software.
+- TCP peer-to-peer block sharing
 
 ## Requirements
 
