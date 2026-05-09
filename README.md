@@ -14,6 +14,7 @@ XYQON is a small Rust blockchain project with:
 - JSON wallet files
 - TCP peer-to-peer block sharing
 
+
 ## Requirements
 
 - Rust and Cargo
