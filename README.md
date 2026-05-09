@@ -12,9 +12,7 @@ XYQON is a small Rust blockchain project with:
 - Fork resolution using accumulated work
 - Balance validation to reject overspending
 - JSON wallet files
-- Simple TCP peer-to-peer block sharing
-
-This is an early learning/project prototype. It is not production-ready cryptocurrency software.
+- TCP peer-to-peer block sharing
 
 ## Requirements
 
