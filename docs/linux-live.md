@@ -107,7 +107,7 @@ journalctl -u xyqon -f
 On another Linux server:
 
 ```bash
-xyqon node --listen 0.0.0.0:7101 --peer YOUR_SEED_NODE_IP:7101
+xyqon node --listen 0.0.0.0:7101 --peer 68.183.98.134:7101
 ```
 
 On startup, the joining node requests the seed node's chain and adopts it if it is valid and has more accumulated work.
@@ -133,9 +133,9 @@ xyqon wallet export --wallet miner.wallet.json
 
 Keep `miner.wallet.json` private. Do not commit wallet files to Git.
 
-## 10. Mine The First Reward Block
+## 10. Start mining 
 
-To mine the first block and pay the first `10.0 XYQON` coinbase reward to your wallet public key:
+Start mining `10.0 XYQON` 
 
 ```bash
 xyqon node \
@@ -146,11 +146,6 @@ xyqon node \
 
 The first non-genesis block will contain a coinbase transaction:
 
-```text
-sender: "network"
-recipient: <your wallet public key>
-amount: 10.0
-```
 
 You should also see:
 
@@ -180,10 +175,6 @@ xyqon node \
 
 The signed transaction enters the mempool, is mined into a block, and then the block is shared with peers.
 
-## 12. Suggested Public Testnet Rollout
-
-1. Start one seed node.
-2. Start a second node on another server and connect it to the seed.
 3. Mine a test transaction and confirm the other node accepts the block.
 4. Add two or three more peers.
 5. Keep this as a testnet while peer discovery, wallet encryption, monitoring, and security review are still outstanding.
