@@ -1,0 +1,18 @@
+[Unit]
+Description=XYQON blockchain node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=xyqon
+Group=xyqon
+WorkingDirectory=/opt/xyqon
+ExecStart=/usr/local/bin/xyqon node --listen 0.0.0.0:7101
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

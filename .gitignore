@@ -1,0 +1,6 @@
+/target
+/target-codex
+*.wallet.json
+wallet.json
+*.log
+.upload-work*
