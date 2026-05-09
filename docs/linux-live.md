@@ -2,7 +2,7 @@
 
 This guide shows how to run XYQON as a public Linux node.
 
-Important: XYQON is still prototype blockchain software. Use this as a public testnet first. Before real economic value is involved, the project needs persistent chain storage, chain sync, peer discovery, fork handling, balance/overspend validation, encrypted wallets, monitoring, backups, and an external security review.
+Important: XYQON is still prototype blockchain software. Use this as a public testnet first. Before real economic value is involved, the project still needs automatic peer discovery, encrypted wallets, stronger peer controls, monitoring, backups, and an external security review.
 
 ## 1. Rent A Server
 
@@ -70,7 +70,9 @@ Your cloud provider may also have a firewall/security group. Open TCP port `7101
 
 ```bash
 useradd --system --home /opt/xyqon --shell /usr/sbin/nologin xyqon
+mkdir -p /var/lib/xyqon
 chown -R xyqon:xyqon /opt/xyqon
+chown -R xyqon:xyqon /var/lib/xyqon
 ```
 
 ## 6. Run A Public Seed Node
@@ -109,6 +111,8 @@ On another Linux server:
 xyqon node --listen 0.0.0.0:7101 --peer YOUR_SEED_NODE_IP:7101
 ```
 
+On startup, the joining node requests the seed node's chain and adopts it if it is valid and has more accumulated work.
+
 If the peer receives and accepts blocks, it will print messages like:
 
 ```text
@@ -137,7 +141,8 @@ To mine the first block and pay the first `10.0 XYQON` coinbase reward to your w
 ```bash
 xyqon node \
   --listen 0.0.0.0:7101 \
-  --wallet miner.wallet.json
+  --wallet miner.wallet.json \
+  --chain /var/lib/xyqon/xyqon-chain.json
 ```
 
 The first non-genesis block will contain a coinbase transaction:
@@ -153,6 +158,14 @@ You should also see:
 ```text
 Circulating supply: 10 / 67000000 XYQON
 Is blockchain valid? true
+```
+
+Check your saved balance:
+
+```bash
+xyqon wallet balance \
+  --wallet miner.wallet.json \
+  --chain /var/lib/xyqon/xyqon-chain.json
 ```
 
 ## 11. Mine A Transaction
@@ -174,16 +187,12 @@ The signed transaction enters the mempool, is mined into a block, and then the b
 2. Start a second node on another server and connect it to the seed.
 3. Mine a test transaction and confirm the other node accepts the block.
 4. Add two or three more peers.
-5. Keep this as a testnet until persistent chain storage and chain sync are implemented.
+5. Keep this as a testnet while peer discovery, wallet encryption, monitoring, and security review are still outstanding.
 
 ## Current Go-Live Blockers
 
 These are the big items before this can responsibly handle real value:
 
-- Persistent blockchain storage
-- Chain synchronization for nodes that join late
-- Fork-choice rules
-- Balance tracking and overspend rejection
 - Encrypted wallet private keys
 - Mempool persistence and transaction expiry
 - Peer discovery and peer banning/rate limiting

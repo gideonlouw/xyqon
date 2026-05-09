@@ -3,6 +3,7 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -19,6 +20,7 @@ const GENESIS_TIMESTAMP: i64 = 1_700_000_000;
 const INITIAL_MINING_REWARD: f64 = 10.0;
 const HALVING_INTERVAL: u64 = 100_000;
 const MAX_COIN_SUPPLY: f64 = 67_000_000.0;
+const BALANCE_EPSILON: f64 = 0.000_000_01;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Transaction {
@@ -257,8 +259,83 @@ impl Block {
             .map(|transaction| transaction.amount)
             .unwrap_or(0.0)
     }
+
+    fn normal_transactions(&self) -> &[Transaction] {
+        if self.index == 0 || self.transactions.is_empty() {
+            return &[];
+        }
+
+        &self.transactions[1..]
+    }
 }
 
+#[derive(Debug, Default)]
+struct WalletBalances {
+    balances: HashMap<String, f64>,
+}
+
+impl WalletBalances {
+    fn new() -> Self {
+        WalletBalances {
+            balances: HashMap::new(),
+        }
+    }
+
+    fn from_chain(chain: &[Block]) -> Self {
+        let mut balances = WalletBalances::new();
+        for block in chain.iter().skip(1) {
+            balances.apply_block(block);
+        }
+
+        balances
+    }
+
+    fn apply_block(&mut self, block: &Block) -> bool {
+        if let Some(coinbase) = block.transactions.first() {
+            self.credit(&coinbase.recipient, coinbase.amount);
+        }
+
+        for transaction in block.normal_transactions() {
+            if self.apply_signed_transaction(transaction).is_err() {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn apply_signed_transaction(&mut self, transaction: &Transaction) -> Result<(), String> {
+        if transaction.amount <= 0.0 {
+            return Err("transaction amount must be positive".to_string());
+        }
+
+        let balance = self.balance(&transaction.sender_public_key);
+        if balance + BALANCE_EPSILON < transaction.amount {
+            return Err(format!(
+                "insufficient funds for {}; balance is {}, attempted to spend {}",
+                transaction.sender, balance, transaction.amount
+            ));
+        }
+
+        self.debit(&transaction.sender_public_key, transaction.amount);
+        self.credit(&transaction.recipient, transaction.amount);
+        Ok(())
+    }
+
+    fn balance(&self, public_key: &str) -> f64 {
+        *self.balances.get(public_key).unwrap_or(&0.0)
+    }
+
+    fn credit(&mut self, public_key: &str, amount: f64) {
+        *self.balances.entry(public_key.to_string()).or_insert(0.0) += amount;
+    }
+
+    fn debit(&mut self, public_key: &str, amount: f64) {
+        *self.balances.entry(public_key.to_string()).or_insert(0.0) -= amount;
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 struct Blockchain {
     chain: Vec<Block>,
     circulating_supply: f64,
@@ -272,6 +349,24 @@ impl Blockchain {
         };
         blockchain.chain.push(Blockchain::genesis_block());
         blockchain
+    }
+
+    fn load_or_new(path: &str) -> Result<Self, String> {
+        if !Path::new(path).exists() {
+            return Ok(Blockchain::new());
+        }
+
+        let contents =
+            fs::read_to_string(path).map_err(|error| format!("failed to read chain: {error}"))?;
+        let mut blockchain: Blockchain = serde_json::from_str(&contents)
+            .map_err(|error| format!("failed to parse chain: {error}"))?;
+        blockchain.recalculate_circulating_supply();
+
+        if !blockchain.is_valid() {
+            return Err(format!("stored chain is invalid: {path}"));
+        }
+
+        Ok(blockchain)
     }
 
     fn genesis_block() -> Block {
@@ -303,6 +398,8 @@ impl Blockchain {
         {
             return Err("block contains an invalid transaction signature".to_string());
         }
+
+        self.validate_spending(&transactions)?;
 
         let reward = self.allowed_reward_for_next_block();
         if reward <= 0.0 {
@@ -351,6 +448,8 @@ impl Blockchain {
             ));
         }
 
+        self.validate_spending(block.normal_transactions())?;
+
         let new_supply = self.circulating_supply + block.coinbase_amount();
         if new_supply > MAX_COIN_SUPPLY {
             return Err(format!(
@@ -365,6 +464,7 @@ impl Blockchain {
 
     fn is_valid(&self) -> bool {
         let mut total_supply = 0.0;
+        let mut balances = WalletBalances::new();
 
         for i in 1..self.chain.len() {
             let current = &self.chain[i];
@@ -378,6 +478,10 @@ impl Blockchain {
             }
 
             if current.previous_hash != previous.hash {
+                return false;
+            }
+
+            if !balances.apply_block(current) {
                 return false;
             }
 
@@ -397,33 +501,81 @@ impl Blockchain {
     fn allowed_reward_for_next_block(&self) -> f64 {
         allowed_mining_reward_for_block(self.latest_block().index + 1, self.circulating_supply)
     }
+
+    fn recalculate_circulating_supply(&mut self) {
+        self.circulating_supply = self.chain.iter().skip(1).map(Block::coinbase_amount).sum();
+    }
+
+    fn wallet_balance(&self, wallet: &WalletFile) -> f64 {
+        self.balance_for_public_key(&wallet.public_key)
+    }
+
+    fn balance_for_public_key(&self, public_key: &str) -> f64 {
+        WalletBalances::from_chain(&self.chain).balance(public_key)
+    }
+
+    fn validate_spending(&self, transactions: &[Transaction]) -> Result<(), String> {
+        let mut balances = WalletBalances::from_chain(&self.chain);
+        for transaction in transactions {
+            balances.apply_signed_transaction(transaction)?;
+        }
+
+        Ok(())
+    }
+
+    fn replace_with_better_chain(&mut self, candidate: Blockchain) -> Result<bool, String> {
+        if !candidate.is_valid() {
+            return Err("candidate chain is invalid".to_string());
+        }
+
+        if candidate.chain_score() <= self.chain_score() {
+            return Ok(false);
+        }
+
+        *self = candidate;
+        self.recalculate_circulating_supply();
+        Ok(true)
+    }
+
+    fn chain_score(&self) -> u128 {
+        self.chain
+            .iter()
+            .skip(1)
+            .map(|block| 1_u128 << block.difficulty.min(63))
+            .sum()
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 enum NetworkMessage {
     NewBlock(Block),
     NewTransaction(Transaction),
+    RequestChain,
+    ChainResponse(Blockchain),
 }
 
 struct Node {
     blockchain: Arc<Mutex<Blockchain>>,
     mempool: Arc<Mutex<Vec<Transaction>>>,
     peers: Vec<String>,
+    chain_path: String,
 }
 
 impl Node {
-    fn new(peers: Vec<String>) -> Self {
-        Node {
-            blockchain: Arc::new(Mutex::new(Blockchain::new())),
+    fn new(peers: Vec<String>, chain_path: String) -> Result<Self, String> {
+        Ok(Node {
+            blockchain: Arc::new(Mutex::new(Blockchain::load_or_new(&chain_path)?)),
             mempool: Arc::new(Mutex::new(Vec::new())),
             peers,
-        }
+            chain_path,
+        })
     }
 
     fn start_listener(&self, listen_addr: String) {
         let blockchain = Arc::clone(&self.blockchain);
         let mempool = Arc::clone(&self.mempool);
         let peers = self.peers.clone();
+        let chain_path = self.chain_path.clone();
 
         thread::spawn(move || {
             let listener =
@@ -436,8 +588,9 @@ impl Node {
                         let blockchain = Arc::clone(&blockchain);
                         let mempool = Arc::clone(&mempool);
                         let peers = peers.clone();
+                        let chain_path = chain_path.clone();
                         thread::spawn(move || {
-                            handle_peer_stream(stream, blockchain, mempool, peers)
+                            handle_peer_stream(stream, blockchain, mempool, peers, chain_path)
                         });
                     }
                     Err(error) => eprintln!("Failed to accept peer connection: {error}"),
@@ -447,7 +600,7 @@ impl Node {
     }
 
     fn submit_transaction(&self, transaction: Transaction) -> Result<(), String> {
-        add_transaction_to_mempool(&self.mempool, transaction.clone())?;
+        add_transaction_to_mempool(&self.blockchain, &self.mempool, transaction.clone())?;
         self.broadcast_transaction(&transaction);
         Ok(())
     }
@@ -466,7 +619,9 @@ impl Node {
                 .blockchain
                 .lock()
                 .map_err(|_| "blockchain lock was poisoned".to_string())?;
-            blockchain.add_block(transactions, miner_reward_recipient)?
+            let block = blockchain.add_block(transactions, miner_reward_recipient)?;
+            save_blockchain(&blockchain, &self.chain_path)?;
+            block
         };
 
         remove_block_transactions_from_mempool(&self.mempool, &block)?;
@@ -480,6 +635,33 @@ impl Node {
 
     fn broadcast_transaction(&self, transaction: &Transaction) {
         broadcast_transaction_to_peers(transaction, &self.peers);
+    }
+
+    fn sync_chain_from_peers(&self) {
+        for peer in &self.peers {
+            match request_chain_from_peer(peer) {
+                Ok(candidate) => {
+                    let result = self
+                        .blockchain
+                        .lock()
+                        .map_err(|_| "blockchain lock was poisoned".to_string())
+                        .and_then(|mut blockchain| {
+                            let replaced = blockchain.replace_with_better_chain(candidate)?;
+                            if replaced {
+                                save_blockchain(&blockchain, &self.chain_path)?;
+                            }
+                            Ok(replaced)
+                        });
+
+                    match result {
+                        Ok(true) => println!("Synced a better chain from {peer}"),
+                        Ok(false) => println!("Local chain is already at least as good as {peer}"),
+                        Err(error) => eprintln!("Could not sync chain from {peer}: {error}"),
+                    }
+                }
+                Err(error) => eprintln!("Could not request chain from {peer}: {error}"),
+            }
+        }
     }
 
     fn print_chain(&self) {
@@ -509,14 +691,20 @@ fn handle_peer_stream(
     blockchain: Arc<Mutex<Blockchain>>,
     mempool: Arc<Mutex<Vec<Transaction>>>,
     peers: Vec<String>,
+    chain_path: String,
 ) {
-    let reader = BufReader::new(stream);
+    let mut reader = BufReader::new(stream);
 
-    for line in reader.lines() {
-        let Ok(line) = line else {
+    loop {
+        let mut line = String::new();
+        let Ok(bytes_read) = reader.read_line(&mut line) else {
             eprintln!("Failed to read message from peer");
             continue;
         };
+
+        if bytes_read == 0 {
+            break;
+        }
 
         let Ok(message) = serde_json::from_str::<NetworkMessage>(&line) else {
             eprintln!("Received invalid network message");
@@ -529,7 +717,11 @@ fn handle_peer_stream(
                 let result = blockchain
                     .lock()
                     .map_err(|_| "blockchain lock was poisoned".to_string())
-                    .and_then(|mut blockchain| blockchain.add_received_block(block));
+                    .and_then(|mut blockchain| {
+                        blockchain.add_received_block(block)?;
+                        save_blockchain(&blockchain, &chain_path)?;
+                        Ok(())
+                    });
 
                 match result {
                     Ok(()) => {
@@ -550,13 +742,33 @@ fn handle_peer_stream(
             }
             NetworkMessage::NewTransaction(transaction) => {
                 let transaction_id = transaction.id();
-                match add_transaction_to_mempool(&mempool, transaction.clone()) {
+                match add_transaction_to_mempool(&blockchain, &mempool, transaction.clone()) {
                     Ok(()) => {
                         println!("Accepted transaction {transaction_id} into mempool");
                         broadcast_transaction_to_peers(&transaction, &peers);
                     }
                     Err(error) => eprintln!("Rejected transaction {transaction_id}: {error}"),
                 }
+            }
+            NetworkMessage::RequestChain => {
+                let response = blockchain
+                    .lock()
+                    .map(|blockchain| NetworkMessage::ChainResponse(blockchain.clone()));
+
+                match response {
+                    Ok(response) => match serde_json::to_string(&response) {
+                        Ok(serialized) => {
+                            if let Err(error) = writeln!(reader.get_mut(), "{serialized}") {
+                                eprintln!("Failed to send chain response: {error}");
+                            }
+                        }
+                        Err(error) => eprintln!("Failed to serialize chain response: {error}"),
+                    },
+                    Err(_) => eprintln!("Could not read chain for sync response"),
+                }
+            }
+            NetworkMessage::ChainResponse(_) => {
+                eprintln!("Unexpected chain response on listener connection");
             }
         }
     }
@@ -567,6 +779,7 @@ enum Command {
     Node(NodeConfig),
     WalletNew(WalletNewConfig),
     WalletExport(WalletExportConfig),
+    WalletBalance(WalletBalanceConfig),
     Help,
 }
 
@@ -576,6 +789,7 @@ struct NodeConfig {
     peers: Vec<String>,
     mine_demo_block: bool,
     wallet_path: Option<String>,
+    chain_path: String,
     recipient: Option<String>,
     amount: f64,
 }
@@ -590,6 +804,12 @@ struct WalletNewConfig {
 struct WalletExportConfig {
     wallet_path: String,
     show_private: bool,
+}
+
+#[derive(Debug)]
+struct WalletBalanceConfig {
+    wallet_path: String,
+    chain_path: String,
 }
 
 impl Command {
@@ -615,6 +835,7 @@ impl NodeConfig {
         let mut peers = Vec::new();
         let mut mine_demo_block = false;
         let mut wallet_path = None;
+        let mut chain_path = "xyqon-chain.json".to_string();
         let mut recipient = None;
         let mut amount = 1.0;
         let mut args = args.into_iter();
@@ -629,6 +850,11 @@ impl NodeConfig {
                 }
                 "--mine-demo" => mine_demo_block = true,
                 "--wallet" => wallet_path = args.next(),
+                "--chain" => {
+                    chain_path = args
+                        .next()
+                        .ok_or_else(|| "--chain requires a file path".to_string())?;
+                }
                 "--to" => {
                     recipient = Some(
                         args.next()
@@ -652,6 +878,7 @@ impl NodeConfig {
             peers,
             mine_demo_block,
             wallet_path,
+            chain_path,
             recipient,
             amount,
         })
@@ -708,6 +935,30 @@ fn parse_wallet_command(mut args: Vec<String>) -> Result<Command, String> {
                 show_private,
             }))
         }
+        "balance" => {
+            let mut wallet_path = None;
+            let mut chain_path = "xyqon-chain.json".to_string();
+            let mut args = args.into_iter();
+
+            while let Some(arg) = args.next() {
+                match arg.as_str() {
+                    "--wallet" => wallet_path = args.next(),
+                    "--chain" => {
+                        chain_path = args
+                            .next()
+                            .ok_or_else(|| "--chain requires a file path".to_string())?;
+                    }
+                    _ => return Err(format!("unknown wallet balance option: {arg}")),
+                }
+            }
+
+            let wallet_path =
+                wallet_path.ok_or_else(|| "wallet balance requires --wallet <path>".to_string())?;
+            Ok(Command::WalletBalance(WalletBalanceConfig {
+                wallet_path,
+                chain_path,
+            }))
+        }
         _ => Err(format!("unknown wallet command: {command}")),
     }
 }
@@ -725,6 +976,7 @@ fn run() -> Result<(), String> {
         Command::Node(config) => run_node(config),
         Command::WalletNew(config) => create_wallet(config),
         Command::WalletExport(config) => export_wallet(config),
+        Command::WalletBalance(config) => show_wallet_balance(config),
         Command::Help => {
             print_help();
             Ok(())
@@ -734,11 +986,13 @@ fn run() -> Result<(), String> {
 
 fn run_node(config: NodeConfig) -> Result<(), String> {
     let has_listener = config.listen_addr.is_some();
-    let node = Node::new(config.peers);
+    let node = Node::new(config.peers, config.chain_path)?;
 
     if let Some(listen_addr) = config.listen_addr {
         node.start_listener(listen_addr);
     }
+
+    node.sync_chain_from_peers();
 
     if let Some(wallet_path) = config.wallet_path {
         let wallet = WalletFile::load(&wallet_path)?;
@@ -805,6 +1059,24 @@ fn export_wallet(config: WalletExportConfig) -> Result<(), String> {
     Ok(())
 }
 
+fn show_wallet_balance(config: WalletBalanceConfig) -> Result<(), String> {
+    let wallet = WalletFile::load(&config.wallet_path)?;
+    let blockchain = Blockchain::load_or_new(&config.chain_path)?;
+    let balance = blockchain.wallet_balance(&wallet);
+
+    println!("Wallet: {}", wallet.name);
+    println!("Public key: {}", wallet.public_key);
+    println!("Chain: {}", config.chain_path);
+    println!("Balance: {balance} XYQON");
+    println!(
+        "Circulating supply: {} / {} XYQON",
+        blockchain.current_supply(),
+        MAX_COIN_SUPPLY
+    );
+
+    Ok(())
+}
+
 fn broadcast_block_to_peers(block: &Block, peers: &[String]) {
     let message = NetworkMessage::NewBlock(block.clone());
     let Ok(serialized) = serde_json::to_string(&message) else {
@@ -824,6 +1096,19 @@ fn broadcast_block_to_peers(block: &Block, peers: &[String]) {
             Err(error) => eprintln!("Could not connect to peer {peer}: {error}"),
         }
     }
+}
+
+fn save_blockchain(blockchain: &Blockchain, path: &str) -> Result<(), String> {
+    if let Some(parent) = Path::new(path).parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("failed to create chain directory: {error}"))?;
+        }
+    }
+
+    let contents = serde_json::to_string_pretty(blockchain)
+        .map_err(|error| format!("failed to serialize chain: {error}"))?;
+    fs::write(path, contents).map_err(|error| format!("failed to save chain: {error}"))
 }
 
 fn broadcast_transaction_to_peers(transaction: &Transaction, peers: &[String]) {
@@ -847,7 +1132,39 @@ fn broadcast_transaction_to_peers(transaction: &Transaction, peers: &[String]) {
     }
 }
 
+fn request_chain_from_peer(peer: &str) -> Result<Blockchain, String> {
+    let mut stream =
+        TcpStream::connect(peer).map_err(|error| format!("could not connect: {error}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .map_err(|error| format!("could not set read timeout: {error}"))?;
+
+    let request = serde_json::to_string(&NetworkMessage::RequestChain)
+        .map_err(|error| format!("could not serialize chain request: {error}"))?;
+    writeln!(stream, "{request}").map_err(|error| format!("could not send request: {error}"))?;
+
+    let mut reader = BufReader::new(stream);
+    let mut response = String::new();
+    reader
+        .read_line(&mut response)
+        .map_err(|error| format!("could not read response: {error}"))?;
+
+    match serde_json::from_str::<NetworkMessage>(&response)
+        .map_err(|error| format!("could not parse response: {error}"))?
+    {
+        NetworkMessage::ChainResponse(mut blockchain) => {
+            blockchain.recalculate_circulating_supply();
+            if !blockchain.is_valid() {
+                return Err("peer returned an invalid chain".to_string());
+            }
+            Ok(blockchain)
+        }
+        _ => Err("peer did not return a chain response".to_string()),
+    }
+}
+
 fn add_transaction_to_mempool(
+    blockchain: &Arc<Mutex<Blockchain>>,
     mempool: &Arc<Mutex<Vec<Transaction>>>,
     transaction: Transaction,
 ) -> Result<(), String> {
@@ -866,6 +1183,16 @@ fn add_transaction_to_mempool(
     {
         return Err("transaction is already in the mempool".to_string());
     }
+
+    let blockchain = blockchain
+        .lock()
+        .map_err(|_| "blockchain lock was poisoned".to_string())?;
+    let mut balances = WalletBalances::from_chain(&blockchain.chain);
+    for pending in mempool.iter() {
+        balances.apply_signed_transaction(pending)?;
+    }
+    balances.apply_signed_transaction(&transaction)?;
+    drop(blockchain);
 
     mempool.push(transaction);
     Ok(())
@@ -949,11 +1276,13 @@ USAGE:
   xyqon node [OPTIONS]
   xyqon wallet new --name <NAME> --out <FILE>
   xyqon wallet export --wallet <FILE> [--show-private]
+  xyqon wallet balance --wallet <FILE> [--chain <FILE>]
 
 NODE OPTIONS:
   --listen <ADDR>       Listen for peer blocks, for example 127.0.0.1:7101 or 0.0.0.0:7101 on Linux
   --peer <ADDR>         Add a peer to share accepted blocks with. Can be repeated
   --wallet <FILE>       Wallet used to mine at startup; omit --to for a coinbase-only block
+  --chain <FILE>        Chain storage file. Defaults to xyqon-chain.json
   --to <RECIPIENT>      Optional recipient name for a startup transaction
   --amount <AMOUNT>     Amount for the startup transaction
   --mine-demo           Mine a demo block at startup
@@ -971,6 +1300,7 @@ MINING:
 WALLET COMMANDS:
   wallet new            Create a new Ed25519 wallet file
   wallet export         Print wallet public key, and optionally private key
+  wallet balance        Calculate wallet balance from the saved chain
 "#
     );
 }
@@ -1027,5 +1357,39 @@ mod tests {
             3.0
         );
         assert_eq!(allowed_mining_reward_for_block(1, MAX_COIN_SUPPLY), 0.0);
+    }
+
+    #[test]
+    fn chain_rejects_overspending_transactions() {
+        let miner_key = SigningKey::from_bytes(&[7; 32]);
+        let miner_public_key = bytes_to_hex(miner_key.verifying_key().as_bytes());
+        let mut blockchain = Blockchain::new();
+
+        blockchain
+            .add_block(vec![], miner_public_key.clone())
+            .expect("coinbase-only block should mine");
+
+        let overspend = Transaction::new("miner", "receiver", 11.0, &miner_key);
+        let result = blockchain.add_block(vec![overspend], miner_public_key);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn chain_replaces_itself_with_better_valid_chain() {
+        let miner_key = SigningKey::from_bytes(&[8; 32]);
+        let miner_public_key = bytes_to_hex(miner_key.verifying_key().as_bytes());
+        let mut local = Blockchain::new();
+        let mut candidate = Blockchain::new();
+
+        candidate
+            .add_block(vec![], miner_public_key)
+            .expect("candidate should mine a better chain");
+
+        assert!(local
+            .replace_with_better_chain(candidate)
+            .expect("valid better chain should be accepted"));
+        assert_eq!(local.latest_block().index, 1);
+        assert_eq!(local.current_supply(), 10.0);
     }
 }

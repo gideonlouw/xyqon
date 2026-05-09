@@ -8,6 +8,9 @@ XYQON is a small Rust blockchain project with:
 - 67 million maximum coin supply
 - Dynamic mining difficulty targeting 30-second blocks
 - Mempool for pending signed transactions
+- Chain sync for late-joining peers
+- Fork resolution using accumulated work
+- Balance validation to reject overspending
 - JSON wallet files
 - Simple TCP peer-to-peer block sharing
 
@@ -84,6 +87,20 @@ Show the private key too:
 cargo run -- wallet export --wallet alice.wallet.json --show-private
 ```
 
+## Check Wallet Balance
+
+Balances are calculated from the saved chain file. The default chain file is `xyqon-chain.json`.
+
+```bash
+xyqon wallet balance --wallet miner.wallet.json
+```
+
+Use `--chain` if your node writes to a custom chain file:
+
+```bash
+xyqon wallet balance --wallet miner.wallet.json --chain /var/lib/xyqon/xyqon-chain.json
+```
+
 ## Run A Node
 
 Start a node that listens for peer blocks:
@@ -99,6 +116,18 @@ On a public Linux server, listen on all interfaces:
 xyqon node --listen 0.0.0.0:7101
 ```
 
+By default, accepted blocks are saved to:
+
+```text
+xyqon-chain.json
+```
+
+Use a custom storage path with:
+
+```bash
+xyqon node --listen 0.0.0.0:7101 --chain /var/lib/xyqon/xyqon-chain.json
+```
+
 ## Join A Peer
 
 Open a second terminal and run another node that connects to the first node:
@@ -112,6 +141,8 @@ You can add more peers by repeating `--peer`:
 ```powershell
 cargo run -- node --listen 127.0.0.1:7103 --peer 127.0.0.1:7101 --peer 127.0.0.1:7102
 ```
+
+When a node starts with peers, it requests their chain and adopts a better valid chain if one is available.
 
 ## Mine And Share A Signed Transaction
 
@@ -190,6 +221,7 @@ NewTransaction(Transaction)
 ```
 
 When a node receives a transaction, it checks the signature, rejects duplicates, stores the transaction in its mempool, and shares it with its configured peers.
+Transactions are also checked against confirmed balances plus already pending spends, so wallets cannot queue transactions that overspend available funds.
 
 When a node receives a block, it checks:
 
@@ -201,26 +233,22 @@ When a node receives a block, it checks:
 - The total coin supply does not exceed 67,000,000 XYQON
 - The coinbase reward does not exceed the remaining unissued supply
 - Every normal transaction signature is valid
+- Every normal transaction has enough confirmed balance to spend
 
 If the block is accepted, the node appends it to its local chain and shares it with its configured peers.
 Transactions included in accepted blocks are removed from the local mempool.
 
+If a peer returns a valid chain with more accumulated work than the local chain, the node adopts that chain and saves it.
+
 ## Current Limitations
 
-- There is no persistent chain storage yet
-- There is no peer discovery yet
-- Fork resolution is not implemented
+- There is no automatic peer discovery yet
 - Wallet files are plain JSON and not encrypted
 - Each CLI startup can mine one transaction, then the node continues listening
-- Balances are not calculated yet
 - The mempool is in memory only and is lost when the node exits
 
 ## Suggested Next Steps
 
-- Save and reload the blockchain from disk
-- Add account balances and reject overspending
 - Add persistent mempool storage
-- Add peer discovery
-- Add chain sync for nodes that join late
-- Add fork choice rules
+- Add automatic peer discovery
 - Encrypt wallet private keys with a passphrase
