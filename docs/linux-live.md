@@ -179,13 +179,3 @@ The signed transaction enters the mempool, is mined into a block, and then the b
 4. Add two or three more peers.
 5. Keep this as a testnet while peer discovery, wallet encryption, monitoring, and security review are still outstanding.
 
-## Current Go-Live Blockers
-
-These are the big items before this can responsibly handle real value:
-
-- Encrypted wallet private keys
-- Mempool persistence and transaction expiry
-- Peer discovery and peer banning/rate limiting
-- TLS or authenticated transport
-- Automated backups and monitoring
-- Security review
