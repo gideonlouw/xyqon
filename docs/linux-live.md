@@ -167,7 +167,7 @@ xyqon wallet balance \
 ```bash
 xyqon node \
   --listen 0.0.0.0:7101 \
-  --peer PEER_IP:7101 \
+  --peer 68.183.98.134:7101 \
   --wallet miner.wallet.json \
   --to Bob \
   --amount 1
