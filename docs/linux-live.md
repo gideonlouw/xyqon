@@ -2,7 +2,6 @@
 
 This guide shows how to run XYQON as a public Linux node.
 
-Important: XYQON is still prototype blockchain software. Use this as a public testnet first. Before real economic value is involved, the project still needs automatic peer discovery, encrypted wallets, stronger peer controls, monitoring, backups, and an external security review.
 
 ## 1. Rent A Server
 
