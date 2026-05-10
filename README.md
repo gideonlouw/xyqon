@@ -43,9 +43,11 @@ For Linux server deployment, firewall setup, systemd setup, and joining instruct
 cargo run -- help
 ```
 
-The app has two command groups:
+The app has these command groups:
 
 - `node`: run a blockchain node
+- `submit`: sign and broadcast a transaction without mining
+- `mine`: run a miner that competes for block rewards
 - `wallet`: create or inspect wallet keys
 
 ## Peer List
@@ -152,31 +154,35 @@ xyqon node \
 
 On startup, the joining node requests chains from known peers and adopts a valid chain with more accumulated work. It also announces its own public address so other running nodes can discover it.
 
-## Mine And Share A Signed Transaction
+## Submit A Transaction
 
-Run a node that loads a wallet and mines the next block. If you omit `--to`, the block contains only the coinbase reward and pays the current reward to your wallet public key:
-
-```bash
-xyqon node \
-  --listen 0.0.0.0:7101 \
-  --advertise YOUR_PUBLIC_IP:7101 \
-  --peers-file /etc/xyqon/peers.txt \
-  --wallet miner.wallet.json \
-  --chain /var/lib/xyqon/xyqon-chain.json
-```
-
-To also create a signed transaction at startup, add `--to` and `--amount`:
+Use `submit` to sign and broadcast a transaction without mining a block. This lets a normal wallet send funds without automatically receiving the next mining reward.
 
 ```bash
-xyqon node \
-  --listen 0.0.0.0:7101 \
-  --advertise YOUR_PUBLIC_IP:7101 \
+xyqon submit \
   --peers-file /etc/xyqon/peers.txt \
   --wallet miner.wallet.json \
   --to RECIPIENT_PUBLIC_KEY \
   --amount 1 \
   --chain /var/lib/xyqon/xyqon-chain.json
 ```
+
+The transaction enters the mempool of reachable peers. A miner must then include it in a block.
+
+## Run A Miner
+
+Use `mine` only on nodes that should compete for block rewards:
+
+```bash
+xyqon mine \
+  --listen 0.0.0.0:7101 \
+  --advertise YOUR_PUBLIC_IP:7101 \
+  --peers-file /etc/xyqon/peers.txt \
+  --wallet miner.wallet.json \
+  --chain /var/lib/xyqon/xyqon-chain.json
+```
+
+The miner keeps syncing with peers, relays valid network messages, and tries to mine when transactions are waiting. The reward goes to whichever miner finds and broadcasts the accepted block. To allow reward-only blocks, add `--mine-empty`.
 
 The reward starts at `10.0 XYQON` and halves every `100,000` mined blocks. Total supply is capped at `67,000,000 XYQON`.
 
@@ -213,5 +219,5 @@ If the block is accepted, the node appends it to its local chain, saves it, remo
 
 - Keep `/etc/xyqon/peers.txt` writable by the `xyqon` service user so discovered peers can be saved.
 - Wallet files are plain JSON and are not encrypted.
-- Each CLI startup with `--wallet` mines one block, then the node continues listening.
+- `node` does not mine. Use `submit` to send funds and `mine` to compete for rewards.
 - The mempool is in memory only and is lost when the node exits.

@@ -178,16 +178,18 @@ xyqon wallet export --wallet /var/lib/xyqon/miner.wallet.json
 
 Keep wallet files private.
 
-## 11. Mine A Block
+## 11. Run A Miner
 
 ```bash
-xyqon node \
+xyqon mine \
   --listen 0.0.0.0:7101 \
   --advertise YOUR_SERVER_IP:7101 \
   --peers-file /etc/xyqon/peers.txt \
   --wallet /var/lib/xyqon/miner.wallet.json \
   --chain /var/lib/xyqon/xyqon-chain.json
 ```
+
+Use the `node` service for always-on relay nodes. Use `mine` only on servers that should compete for block rewards. Miners wait for pending transactions by default; add `--mine-empty` only if you intentionally want reward-only blocks.
 
 Check the saved balance:
 
@@ -197,7 +199,20 @@ xyqon wallet balance \
   --chain /var/lib/xyqon/xyqon-chain.json
 ```
 
-## 12. Verify Public Reachability
+## 12. Submit A Transaction
+
+This signs and broadcasts a transaction without mining a block:
+
+```bash
+xyqon submit \
+  --peers-file /etc/xyqon/peers.txt \
+  --wallet /var/lib/xyqon/miner.wallet.json \
+  --to RECIPIENT_PUBLIC_KEY \
+  --amount 1 \
+  --chain /var/lib/xyqon/xyqon-chain.json
+```
+
+## 13. Verify Public Reachability
 
 From your local machine or another server:
 

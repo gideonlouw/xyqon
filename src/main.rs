@@ -737,6 +737,13 @@ impl Node {
         Ok(())
     }
 
+    fn pending_transaction_count(&self) -> usize {
+        self.mempool
+            .lock()
+            .map(|mempool| mempool.len())
+            .unwrap_or(0)
+    }
+
     fn broadcast_block(&self, block: &Block) {
         broadcast_block_to_peers(block, &self.peers);
     }
@@ -901,6 +908,8 @@ fn handle_peer_stream(
 #[derive(Debug)]
 enum Command {
     Node(NodeConfig),
+    Submit(SubmitConfig),
+    Mine(MineConfig),
     WalletNew(WalletNewConfig),
     WalletExport(WalletExportConfig),
     WalletBalance(WalletBalanceConfig),
@@ -912,12 +921,30 @@ struct NodeConfig {
     listen_addr: Option<String>,
     peers: Vec<String>,
     peers_file: Option<String>,
-    mine_startup_block: bool,
-    wallet_path: Option<String>,
     chain_path: String,
     advertised_addr: Option<String>,
-    recipient: Option<String>,
+}
+
+#[derive(Debug)]
+struct SubmitConfig {
+    peers: Vec<String>,
+    peers_file: Option<String>,
+    wallet_path: String,
+    chain_path: String,
+    recipient: String,
     amount: f64,
+}
+
+#[derive(Debug)]
+struct MineConfig {
+    listen_addr: Option<String>,
+    peers: Vec<String>,
+    peers_file: Option<String>,
+    wallet_path: String,
+    chain_path: String,
+    advertised_addr: Option<String>,
+    interval_seconds: u64,
+    mine_empty_blocks: bool,
 }
 
 #[derive(Debug)]
@@ -948,6 +975,8 @@ impl Command {
         let command = args.remove(0);
         match command.as_str() {
             "node" => NodeConfig::from_args(args).map(Command::Node),
+            "submit" => SubmitConfig::from_args(args).map(Command::Submit),
+            "mine" => MineConfig::from_args(args).map(Command::Mine),
             "wallet" => parse_wallet_command(args),
             "help" | "--help" | "-h" => Ok(Command::Help),
             _ => Err(format!("unknown command: {command}")),
@@ -960,12 +989,8 @@ impl NodeConfig {
         let mut listen_addr = None;
         let mut peers = Vec::new();
         let mut peers_file = None;
-        let mut mine_startup_block = false;
-        let mut wallet_path = None;
         let mut chain_path = "xyqon-chain.json".to_string();
         let mut advertised_addr = None;
-        let mut recipient = None;
-        let mut amount = 1.0;
         let mut args = args.into_iter();
 
         while let Some(arg) = args.next() {
@@ -988,7 +1013,48 @@ impl NodeConfig {
                             .ok_or_else(|| "--advertise requires an address".to_string())?,
                     );
                 }
-                "--mine" => mine_startup_block = true,
+                "--chain" => {
+                    chain_path = args
+                        .next()
+                        .ok_or_else(|| "--chain requires a file path".to_string())?;
+                }
+                _ => return Err(format!("unknown node option: {arg}")),
+            }
+        }
+
+        Ok(NodeConfig {
+            listen_addr,
+            peers,
+            peers_file,
+            chain_path,
+            advertised_addr,
+        })
+    }
+}
+
+impl SubmitConfig {
+    fn from_args(args: Vec<String>) -> Result<Self, String> {
+        let mut peers = Vec::new();
+        let mut peers_file = None;
+        let mut wallet_path = None;
+        let mut chain_path = "xyqon-chain.json".to_string();
+        let mut recipient = None;
+        let mut amount = None;
+        let mut args = args.into_iter();
+
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--peer" => {
+                    if let Some(peer) = args.next() {
+                        peers.push(peer);
+                    }
+                }
+                "--peers-file" => {
+                    peers_file = Some(
+                        args.next()
+                            .ok_or_else(|| "--peers-file requires a file path".to_string())?,
+                    );
+                }
                 "--wallet" => wallet_path = args.next(),
                 "--chain" => {
                     chain_path = args
@@ -1005,24 +1071,88 @@ impl NodeConfig {
                     let value = args
                         .next()
                         .ok_or_else(|| "--amount requires a number".to_string())?;
-                    amount = value
-                        .parse::<f64>()
-                        .map_err(|_| format!("invalid amount: {value}"))?;
+                    amount = Some(
+                        value
+                            .parse::<f64>()
+                            .map_err(|_| format!("invalid amount: {value}"))?,
+                    );
                 }
-                _ => return Err(format!("unknown node option: {arg}")),
+                _ => return Err(format!("unknown submit option: {arg}")),
             }
         }
 
-        Ok(NodeConfig {
+        Ok(SubmitConfig {
+            peers,
+            peers_file,
+            wallet_path: wallet_path
+                .ok_or_else(|| "submit requires --wallet <FILE>".to_string())?,
+            chain_path,
+            recipient: recipient.ok_or_else(|| "submit requires --to <RECIPIENT>".to_string())?,
+            amount: amount.ok_or_else(|| "submit requires --amount <AMOUNT>".to_string())?,
+        })
+    }
+}
+
+impl MineConfig {
+    fn from_args(args: Vec<String>) -> Result<Self, String> {
+        let mut listen_addr = None;
+        let mut peers = Vec::new();
+        let mut peers_file = None;
+        let mut wallet_path = None;
+        let mut chain_path = "xyqon-chain.json".to_string();
+        let mut advertised_addr = None;
+        let mut interval_seconds = 1;
+        let mut mine_empty_blocks = false;
+        let mut args = args.into_iter();
+
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--listen" => listen_addr = args.next(),
+                "--peer" => {
+                    if let Some(peer) = args.next() {
+                        peers.push(peer);
+                    }
+                }
+                "--peers-file" => {
+                    peers_file = Some(
+                        args.next()
+                            .ok_or_else(|| "--peers-file requires a file path".to_string())?,
+                    );
+                }
+                "--advertise" => {
+                    advertised_addr = Some(
+                        args.next()
+                            .ok_or_else(|| "--advertise requires an address".to_string())?,
+                    );
+                }
+                "--wallet" => wallet_path = args.next(),
+                "--chain" => {
+                    chain_path = args
+                        .next()
+                        .ok_or_else(|| "--chain requires a file path".to_string())?;
+                }
+                "--interval" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| "--interval requires a number of seconds".to_string())?;
+                    interval_seconds = value
+                        .parse::<u64>()
+                        .map_err(|_| format!("invalid interval: {value}"))?;
+                }
+                "--mine-empty" => mine_empty_blocks = true,
+                _ => return Err(format!("unknown mine option: {arg}")),
+            }
+        }
+
+        Ok(MineConfig {
             listen_addr,
             peers,
             peers_file,
-            mine_startup_block,
-            wallet_path,
+            wallet_path: wallet_path.ok_or_else(|| "mine requires --wallet <FILE>".to_string())?,
             chain_path,
             advertised_addr,
-            recipient,
-            amount,
+            interval_seconds,
+            mine_empty_blocks,
         })
     }
 }
@@ -1116,6 +1246,8 @@ fn main() {
 fn run() -> Result<(), String> {
     match Command::from_args()? {
         Command::Node(config) => run_node(config),
+        Command::Submit(config) => submit_transaction(config),
+        Command::Mine(config) => run_miner(config),
         Command::WalletNew(config) => create_wallet(config),
         Command::WalletExport(config) => export_wallet(config),
         Command::WalletBalance(config) => show_wallet_balance(config),
@@ -1128,12 +1260,7 @@ fn run() -> Result<(), String> {
 
 fn run_node(config: NodeConfig) -> Result<(), String> {
     let listen_addr = config.listen_addr.clone();
-    let wallet_path = config.wallet_path.clone();
-    let recipient = config.recipient.clone();
-    let amount = config.amount;
     let has_listener = listen_addr.is_some();
-    let mine_startup_block = config.mine_startup_block;
-    let has_wallet = wallet_path.is_some();
     let should_stay_alive = has_listener || !config.peers.is_empty() || config.peers_file.is_some();
     let node = Node::new(config)?;
 
@@ -1144,31 +1271,78 @@ fn run_node(config: NodeConfig) -> Result<(), String> {
     node.sync_chain_from_peers();
     node.announce_self();
 
-    if let Some(wallet_path) = wallet_path {
-        let wallet = WalletFile::load(&wallet_path)?;
-        let signing_key = wallet.signing_key()?;
-        if let Some(recipient) = recipient {
-            node.submit_transaction(Transaction::new(
-                &wallet.name,
-                &recipient,
-                amount,
-                &signing_key,
-            ))?;
-        }
-        node.mine_pending_transactions(wallet.public_key)?;
-    } else if mine_startup_block {
-        return Err("mining requires --wallet <FILE>".to_string());
-    }
-
     node.print_chain();
 
-    if should_stay_alive || has_wallet {
+    if should_stay_alive {
         loop {
             thread::sleep(Duration::from_secs(60));
         }
     }
 
     Ok(())
+}
+
+fn submit_transaction(config: SubmitConfig) -> Result<(), String> {
+    let wallet = WalletFile::load(&config.wallet_path)?;
+    let signing_key = wallet.signing_key()?;
+    let node = Node::new(NodeConfig {
+        listen_addr: None,
+        peers: config.peers,
+        peers_file: config.peers_file,
+        chain_path: config.chain_path,
+        advertised_addr: None,
+    })?;
+
+    node.sync_chain_from_peers();
+    node.submit_transaction(Transaction::new(
+        &wallet.name,
+        &config.recipient,
+        config.amount,
+        &signing_key,
+    ))?;
+    println!(
+        "Submitted transaction from {} to {} for {} XYQON",
+        wallet.public_key, config.recipient, config.amount
+    );
+    Ok(())
+}
+
+fn run_miner(config: MineConfig) -> Result<(), String> {
+    let listen_addr = config.listen_addr.clone();
+    let wallet = WalletFile::load(&config.wallet_path)?;
+    let node = Node::new(NodeConfig {
+        listen_addr: config.listen_addr,
+        peers: config.peers,
+        peers_file: config.peers_file,
+        chain_path: config.chain_path,
+        advertised_addr: config.advertised_addr,
+    })?;
+
+    if let Some(listen_addr) = listen_addr {
+        node.start_listener(listen_addr);
+    }
+
+    node.sync_chain_from_peers();
+    node.announce_self();
+    println!("Mining rewards will be paid to {}", wallet.public_key);
+
+    loop {
+        node.sync_chain_from_peers();
+        if !config.mine_empty_blocks && node.pending_transaction_count() == 0 {
+            println!("No pending transactions; waiting for work");
+            thread::sleep(Duration::from_secs(config.interval_seconds.max(1)));
+            continue;
+        }
+
+        match node.mine_pending_transactions(wallet.public_key.clone()) {
+            Ok(()) => node.print_chain(),
+            Err(error) => eprintln!("Mining attempt failed: {error}"),
+        }
+
+        if config.interval_seconds > 0 {
+            thread::sleep(Duration::from_secs(config.interval_seconds));
+        }
+    }
 }
 
 fn create_wallet(config: WalletNewConfig) -> Result<(), String> {
@@ -1443,6 +1617,8 @@ fn print_help() {
 
 USAGE:
   xyqon node [OPTIONS]
+  xyqon submit --wallet <FILE> --to <RECIPIENT> --amount <AMOUNT> [NETWORK OPTIONS]
+  xyqon mine --wallet <FILE> [NETWORK OPTIONS]
   xyqon wallet new --name <NAME> --out <FILE>
   xyqon wallet export --wallet <FILE> [--show-private]
   xyqon wallet balance --wallet <FILE> [--chain <FILE>]
@@ -1452,15 +1628,31 @@ NODE OPTIONS:
   --peer <ADDR>         Add a peer to share accepted blocks with. Can be repeated
   --peers-file <FILE>   Load peers from a newline-separated file and save discovered peers back to it
   --advertise <ADDR>    Public address this node announces to peers, for example 68.183.98.134:7101
-  --wallet <FILE>       Wallet used to mine at startup; omit --to for a coinbase-only block
   --chain <FILE>        Chain storage file. Defaults to xyqon-chain.json
-  --to <RECIPIENT>      Optional recipient name for a startup transaction
-  --amount <AMOUNT>     Amount for the startup transaction
-  --mine                Mine a startup block; requires --wallet
+
+SUBMIT OPTIONS:
+  --wallet <FILE>       Wallet that signs the transaction
+  --to <RECIPIENT>      Recipient public key
+  --amount <AMOUNT>     Amount to transfer
+  --peer <ADDR>         Peer to broadcast the transaction to. Can be repeated
+  --peers-file <FILE>   Load peers from a newline-separated file
+  --chain <FILE>        Chain storage file. Defaults to xyqon-chain.json
+
+MINE OPTIONS:
+  --wallet <FILE>       Wallet that receives mining rewards
+  --listen <ADDR>       Listen for peer blocks and transactions while mining
+  --peer <ADDR>         Peer to sync and broadcast with. Can be repeated
+  --peers-file <FILE>   Load peers from a newline-separated file
+  --advertise <ADDR>    Public address this miner announces to peers
+  --chain <FILE>        Chain storage file. Defaults to xyqon-chain.json
+  --interval <SECONDS>  Delay between mining attempts. Defaults to 1
+  --mine-empty          Allow mining coinbase-only blocks when there are no pending transactions
 
 MINING:
-  Signed startup transactions enter the mempool before they are mined.
-  Mining collects pending mempool transactions into the next block.
+  The node command only listens, syncs, validates, and relays.
+  The submit command signs and broadcasts transactions without mining.
+  The mine command runs a continuous mining loop for wallets that want to compete for rewards.
+  Miners wait for pending transactions by default; pass --mine-empty to mine reward-only blocks.
   Each mined block receives one coinbase reward transaction.
   The initial reward is 10.0 XYQON and halves every 100,000 blocks.
   Difficulty adjusts dynamically to target one block every 30 seconds.
