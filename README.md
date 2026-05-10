@@ -6,8 +6,8 @@ XYQON is a Rust blockchain node with:
 - Signed Ed25519 transactions
 - Coinbase mining rewards
 - 67 million maximum coin supply
-- Dynamic mining difficulty targeting 30-second blocks
-- Mempool for pending signed transactions
+- Rolling-window mining difficulty targeting 60-second blocks
+- Persistent mempool for pending signed transactions
 - Chain sync for late-joining peers
 - Peer discovery through a shared node list and peer announcements
 - Fork resolution using accumulated work
@@ -184,6 +184,14 @@ xyqon mine \
 
 The miner keeps syncing with peers, relays valid network messages, and tries to mine when transactions are waiting. The reward goes to whichever miner finds and broadcasts the accepted block. To allow reward-only blocks, add `--mine-empty`.
 
+The default mempool file is based on the chain path:
+
+```text
+/var/lib/xyqon/xyqon-chain.json.mempool.json
+```
+
+Use `--mempool <FILE>` on `node`, `submit`, or `mine` if you want a custom mempool path.
+
 The reward starts at `10.0 XYQON` and halves every `100,000` mined blocks. Total supply is capped at `67,000,000 XYQON`.
 
 ## How Block Sharing Works
@@ -207,7 +215,7 @@ When a node receives a block, it checks:
 - The block index is the next expected index
 - The previous hash links to the local chain tip
 - The proof-of-work hash is valid
-- The difficulty is correct for the 30-second block target
+- The difficulty is correct for the active block target
 - The first transaction is the correct coinbase reward for that block height
 - The total coin supply does not exceed 67,000,000 XYQON
 - Every normal transaction signature is valid
@@ -220,4 +228,4 @@ If the block is accepted, the node appends it to its local chain, saves it, remo
 - Keep `/etc/xyqon/peers.txt` writable by the `xyqon` service user so discovered peers can be saved.
 - Wallet files are plain JSON and are not encrypted.
 - `node` does not mine. Use `submit` to send funds and `mine` to compete for rewards.
-- The mempool is in memory only and is lost when the node exits.
+- The mempool is persisted to disk and reloaded on startup.

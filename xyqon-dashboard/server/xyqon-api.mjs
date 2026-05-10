@@ -1,5 +1,6 @@
 import http from 'node:http';
 import net from 'node:net';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -8,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = dirname(__dirname);
 const port = Number(process.env.XYQON_DASHBOARD_API_PORT ?? 4300);
-const defaultPeers = ['68.183.98.134:7101', '143.244.149.8:7101'];
+const defaultPeers = ['68.183.98.134:7101', '143.244.149.8:7101', '147.182.138.183:7101'];
 
 async function readConfiguredPeers() {
   const filePath = process.env.XYQON_PEERS_FILE ?? join(rootDir, 'peers.txt');
@@ -117,7 +118,24 @@ function buildBalances(chain) {
     .sort((a, b) => b.balance - a.balance);
 }
 
-async function getDashboard() {
+function transactionId(transaction) {
+  return createHash('sha256').update(JSON.stringify(transaction)).digest('hex');
+}
+
+function flattenTransactions(chain) {
+  return chain.chain.flatMap((block) =>
+    block.transactions.map((transaction, index) => ({
+      id: transactionId(transaction),
+      blockIndex: block.index,
+      transactionIndex: index,
+      timestamp: block.timestamp,
+      isCoinbase: index === 0,
+      ...transaction
+    }))
+  );
+}
+
+async function getNetworkSnapshot() {
   const knownPeers = await readConfiguredPeers();
   const results = await Promise.all(knownPeers.map((peer) => requestChain(peer)));
   const nodes = results.map((result) => ({
@@ -135,8 +153,14 @@ async function getDashboard() {
     .sort((a, b) => chainScore(b.chain) - chainScore(a.chain))[0];
 
   const chain = best?.chain ?? { chain: [], circulating_supply: 0 };
+  return { knownPeers, results, nodes, best, chain };
+}
+
+async function getDashboard() {
+  const { knownPeers, nodes, best, chain } = await getNetworkSnapshot();
   const latestBlock = chain.chain.at(-1) ?? null;
   const balances = buildBalances(chain);
+  const transactions = flattenTransactions(chain);
 
   return {
     generatedAt: new Date().toISOString(),
@@ -152,8 +176,42 @@ async function getDashboard() {
     },
     richList: balances.slice(0, 25),
     publicAddresses: balances,
-    recentBlocks: chain.chain.slice(-8).reverse()
+    recentBlocks: chain.chain.slice(-8).reverse(),
+    recentTransactions: transactions.slice(-12).reverse()
   };
+}
+
+async function getAddress(address) {
+  const { chain, best } = await getNetworkSnapshot();
+  const balances = buildBalances(chain);
+  const transactions = flattenTransactions(chain).filter(
+    (transaction) => transaction.recipient === address || transaction.sender_public_key === address
+  );
+  return {
+    sourceNode: best?.peer ?? null,
+    address,
+    balance: balances.find((entry) => entry.address === address) ?? {
+      address,
+      balance: 0,
+      mined: 0,
+      received: 0,
+      sent: 0,
+      transactions: 0
+    },
+    transactions: transactions.reverse()
+  };
+}
+
+async function getBlock(id) {
+  const { chain, best } = await getNetworkSnapshot();
+  const block = chain.chain.find((candidate) => `${candidate.index}` === id || candidate.hash === id);
+  return { sourceNode: best?.peer ?? null, block: block ?? null };
+}
+
+async function getTransaction(id) {
+  const { chain, best } = await getNetworkSnapshot();
+  const transaction = flattenTransactions(chain).find((candidate) => candidate.id === id);
+  return { sourceNode: best?.peer ?? null, transaction: transaction ?? null };
 }
 
 async function sendJson(response, status, body) {
@@ -166,7 +224,8 @@ async function sendJson(response, status, body) {
 }
 
 async function handleRequest(request, response) {
-  if (request.url === '/api/dashboard') {
+  const url = new URL(request.url, 'http://127.0.0.1');
+  if (url.pathname === '/api/dashboard') {
     try {
       await sendJson(response, 200, await getDashboard());
     } catch (error) {
@@ -175,7 +234,26 @@ async function handleRequest(request, response) {
     return;
   }
 
-  if (request.url === '/api/health') {
+  if (url.pathname.startsWith('/api/address/')) {
+    await sendJson(response, 200, await getAddress(decodeURIComponent(url.pathname.slice('/api/address/'.length))));
+    return;
+  }
+
+  if (url.pathname.startsWith('/api/block/')) {
+    await sendJson(response, 200, await getBlock(decodeURIComponent(url.pathname.slice('/api/block/'.length))));
+    return;
+  }
+
+  if (url.pathname.startsWith('/api/transaction/')) {
+    await sendJson(
+      response,
+      200,
+      await getTransaction(decodeURIComponent(url.pathname.slice('/api/transaction/'.length)))
+    );
+    return;
+  }
+
+  if (url.pathname === '/api/health') {
     await sendJson(response, 200, { ok: true });
     return;
   }

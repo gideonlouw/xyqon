@@ -31,6 +31,14 @@ type NodeStatus = {
   error: string | null;
 };
 
+type ExplorerTransaction = Transaction & {
+  id: string;
+  blockIndex: number;
+  transactionIndex: number;
+  timestamp: number;
+  isCoinbase: boolean;
+};
+
 type AddressBalance = {
   address: string;
   balance: number;
@@ -55,6 +63,7 @@ type DashboardResponse = {
   richList: AddressBalance[];
   publicAddresses: AddressBalance[];
   recentBlocks: Block[];
+  recentTransactions: ExplorerTransaction[];
 };
 
 @Component({
@@ -144,6 +153,75 @@ type DashboardResponse = {
 
         <section class="panel">
           <div class="panel-head">
+            <h2>Explorer</h2>
+            <span>Search by address, block height, block hash, or transaction id</span>
+          </div>
+          <div class="searchbar">
+            <input
+              type="search"
+              placeholder="Paste address, block, or transaction"
+              [value]="query()"
+              (input)="query.set($any($event.target).value)"
+            >
+          </div>
+          @if (query().trim()) {
+            <div class="explorer-result">
+              @if (matchedAddress(); as address) {
+                <article>
+                  <span>Address</span>
+                  <p class="mono wrap">{{ address.address }}</p>
+                  <strong>{{ address.balance | number:'1.0-8' }} XYQON</strong>
+                </article>
+              }
+              @if (matchedBlock(); as block) {
+                <article>
+                  <span>Block</span>
+                  <p>#{{ block.index }} · {{ block.transactions.length }} transactions</p>
+                  <strong class="mono wrap">{{ block.hash }}</strong>
+                </article>
+              }
+              @if (matchedTransaction(); as transaction) {
+                <article>
+                  <span>Transaction</span>
+                  <p>{{ transaction.amount | number:'1.0-8' }} XYQON in block #{{ transaction.blockIndex }}</p>
+                  <strong class="mono wrap">{{ transaction.id }}</strong>
+                </article>
+              }
+              @if (!matchedAddress() && !matchedBlock() && !matchedTransaction()) {
+                <article>
+                  <span>No Match</span>
+                  <p>Nothing in the current chain matches that value.</p>
+                </article>
+              }
+            </div>
+          }
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Recent Transactions</h2>
+            <span>{{ data.recentTransactions.length }} latest entries</span>
+          </div>
+          <div class="table transactions">
+            <div class="row header">
+              <span>Type</span>
+              <span>Block</span>
+              <span>Recipient</span>
+              <span>Amount</span>
+            </div>
+            @for (transaction of data.recentTransactions; track transaction.id) {
+              <div class="row">
+                <span>{{ transaction.isCoinbase ? 'Reward' : 'Transfer' }}</span>
+                <span>#{{ transaction.blockIndex }}</span>
+                <span class="mono wrap">{{ transaction.recipient }}</span>
+                <span>{{ transaction.amount | number:'1.0-8' }}</span>
+              </div>
+            }
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
             <h2>Rich List</h2>
             <span>Top balances from the current chain</span>
           </div>
@@ -194,7 +272,24 @@ class App {
   dashboard = signal<DashboardResponse | null>(null);
   loading = signal(false);
   error = signal<string | null>(null);
+  query = signal('');
   onlineNodes = computed(() => this.dashboard()?.nodes.filter((node) => node.online).length ?? 0);
+  matchedAddress = computed(() => {
+    const value = this.query().trim();
+    return value ? this.dashboard()?.publicAddresses.find((address) => address.address === value) ?? null : null;
+  });
+  matchedBlock = computed(() => {
+    const value = this.query().trim();
+    return value
+      ? this.dashboard()?.recentBlocks.find((block) => `${block.index}` === value || block.hash === value) ?? null
+      : null;
+  });
+  matchedTransaction = computed(() => {
+    const value = this.query().trim();
+    return value
+      ? this.dashboard()?.recentTransactions.find((transaction) => transaction.id === value) ?? null
+      : null;
+  });
 
   constructor() {
     this.load();

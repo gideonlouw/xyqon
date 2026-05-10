@@ -15,7 +15,10 @@ use std::time::Duration;
 
 const INITIAL_DIFFICULTY: usize = 4;
 const MIN_DIFFICULTY: usize = 1;
-const TARGET_BLOCK_TIME_SECONDS: i64 = 30;
+const TARGET_BLOCK_TIME_SECONDS: i64 = 60;
+const LEGACY_TARGET_BLOCK_TIME_SECONDS: i64 = 30;
+const DIFFICULTY_WINDOW_BLOCKS: usize = 10;
+const ROLLING_DIFFICULTY_START_BLOCK: u64 = 6;
 const GENESIS_TIMESTAMP: i64 = 1_700_000_000;
 const INITIAL_MINING_REWARD: f64 = 10.0;
 const HALVING_INTERVAL: u64 = 100_000;
@@ -413,7 +416,7 @@ impl Blockchain {
 
         let prev = self.latest_block();
         let timestamp = Utc::now().timestamp();
-        let difficulty = expected_difficulty_for_next_block(prev, timestamp);
+        let difficulty = expected_difficulty_for_next_block(&self.chain, timestamp);
         let new_block = Block::new(
             prev.index + 1,
             timestamp,
@@ -441,7 +444,7 @@ impl Blockchain {
             return Err("received block does not link to local chain tip".to_string());
         }
 
-        let expected_difficulty = expected_difficulty_for_next_block(previous, block.timestamp);
+        let expected_difficulty = expected_difficulty_for_next_block(&self.chain, block.timestamp);
         let expected_reward = self.allowed_reward_for_next_block();
         if !block.is_valid(expected_difficulty, expected_reward) {
             return Err(format!(
@@ -471,7 +474,7 @@ impl Blockchain {
             let current = &self.chain[i];
             let previous = &self.chain[i - 1];
             let expected_difficulty =
-                expected_difficulty_for_next_block(previous, current.timestamp);
+                expected_difficulty_for_next_block(&self.chain[..i], current.timestamp);
             let expected_reward = allowed_mining_reward_for_block(current.index, total_supply);
 
             if !current.is_valid(expected_difficulty, expected_reward) {
@@ -659,6 +662,7 @@ struct Node {
     mempool: Arc<Mutex<Vec<Transaction>>>,
     peers: PeerBook,
     chain_path: String,
+    mempool_path: String,
     advertised_addr: Option<String>,
 }
 
@@ -672,9 +676,10 @@ impl Node {
 
         Ok(Node {
             blockchain: Arc::new(Mutex::new(Blockchain::load_or_new(&config.chain_path)?)),
-            mempool: Arc::new(Mutex::new(Vec::new())),
+            mempool: Arc::new(Mutex::new(load_mempool(&config.mempool_path)?)),
             peers,
             chain_path: config.chain_path,
+            mempool_path: config.mempool_path,
             advertised_addr: config.advertised_addr,
         })
     }
@@ -684,6 +689,7 @@ impl Node {
         let mempool = Arc::clone(&self.mempool);
         let peers = self.peers.clone();
         let chain_path = self.chain_path.clone();
+        let mempool_path = self.mempool_path.clone();
 
         thread::spawn(move || {
             let listener =
@@ -697,8 +703,16 @@ impl Node {
                         let mempool = Arc::clone(&mempool);
                         let peers = peers.clone();
                         let chain_path = chain_path.clone();
+                        let mempool_path = mempool_path.clone();
                         thread::spawn(move || {
-                            handle_peer_stream(stream, blockchain, mempool, peers, chain_path)
+                            handle_peer_stream(
+                                stream,
+                                blockchain,
+                                mempool,
+                                peers,
+                                chain_path,
+                                mempool_path,
+                            )
                         });
                     }
                     Err(error) => eprintln!("Failed to accept peer connection: {error}"),
@@ -709,6 +723,7 @@ impl Node {
 
     fn submit_transaction(&self, transaction: Transaction) -> Result<(), String> {
         add_transaction_to_mempool(&self.blockchain, &self.mempool, transaction.clone())?;
+        save_mempool(&self.mempool, &self.mempool_path)?;
         self.broadcast_transaction(&transaction);
         Ok(())
     }
@@ -723,17 +738,29 @@ impl Node {
         };
 
         let block = {
+            let blockchain = self
+                .blockchain
+                .lock()
+                .map_err(|_| "blockchain lock was poisoned".to_string())?;
+            build_candidate_block(&blockchain, transactions, miner_reward_recipient)?
+        };
+
+        let accepted = {
             let mut blockchain = self
                 .blockchain
                 .lock()
                 .map_err(|_| "blockchain lock was poisoned".to_string())?;
-            let block = blockchain.add_block(transactions, miner_reward_recipient)?;
+            blockchain.add_received_block(block.clone())?;
             save_blockchain(&blockchain, &self.chain_path)?;
-            block
+            true
         };
 
-        remove_block_transactions_from_mempool(&self.mempool, &block)?;
-        self.broadcast_block(&block);
+        if accepted {
+            remove_block_transactions_from_mempool(&self.mempool, &block)?;
+            save_mempool(&self.mempool, &self.mempool_path)?;
+            self.broadcast_block(&block);
+        }
+
         Ok(())
     }
 
@@ -815,6 +842,7 @@ fn handle_peer_stream(
     mempool: Arc<Mutex<Vec<Transaction>>>,
     peers: PeerBook,
     chain_path: String,
+    mempool_path: String,
 ) {
     let mut reader = BufReader::new(stream);
 
@@ -856,6 +884,8 @@ fn handle_peer_stream(
                                 remove_block_transactions_from_mempool(&mempool, &block)
                             {
                                 eprintln!("Could not clean mempool after block: {error}");
+                            } else if let Err(error) = save_mempool(&mempool, &mempool_path) {
+                                eprintln!("Could not save mempool after block: {error}");
                             }
                             broadcast_block_to_peers(&block, &peers);
                         }
@@ -868,6 +898,9 @@ fn handle_peer_stream(
                 match add_transaction_to_mempool(&blockchain, &mempool, transaction.clone()) {
                     Ok(()) => {
                         println!("Accepted transaction {transaction_id} into mempool");
+                        if let Err(error) = save_mempool(&mempool, &mempool_path) {
+                            eprintln!("Could not save mempool: {error}");
+                        }
                         broadcast_transaction_to_peers(&transaction, &peers);
                     }
                     Err(error) => eprintln!("Rejected transaction {transaction_id}: {error}"),
@@ -922,6 +955,7 @@ struct NodeConfig {
     peers: Vec<String>,
     peers_file: Option<String>,
     chain_path: String,
+    mempool_path: String,
     advertised_addr: Option<String>,
 }
 
@@ -931,6 +965,7 @@ struct SubmitConfig {
     peers_file: Option<String>,
     wallet_path: String,
     chain_path: String,
+    mempool_path: String,
     recipient: String,
     amount: f64,
 }
@@ -942,6 +977,7 @@ struct MineConfig {
     peers_file: Option<String>,
     wallet_path: String,
     chain_path: String,
+    mempool_path: String,
     advertised_addr: Option<String>,
     interval_seconds: u64,
     mine_empty_blocks: bool,
@@ -990,6 +1026,7 @@ impl NodeConfig {
         let mut peers = Vec::new();
         let mut peers_file = None;
         let mut chain_path = "xyqon-chain.json".to_string();
+        let mut mempool_path = None;
         let mut advertised_addr = None;
         let mut args = args.into_iter();
 
@@ -1018,15 +1055,23 @@ impl NodeConfig {
                         .next()
                         .ok_or_else(|| "--chain requires a file path".to_string())?;
                 }
+                "--mempool" => {
+                    mempool_path = Some(
+                        args.next()
+                            .ok_or_else(|| "--mempool requires a file path".to_string())?,
+                    );
+                }
                 _ => return Err(format!("unknown node option: {arg}")),
             }
         }
 
+        let mempool_path = mempool_path.unwrap_or_else(|| default_mempool_path(&chain_path));
         Ok(NodeConfig {
             listen_addr,
             peers,
             peers_file,
             chain_path,
+            mempool_path,
             advertised_addr,
         })
     }
@@ -1038,6 +1083,7 @@ impl SubmitConfig {
         let mut peers_file = None;
         let mut wallet_path = None;
         let mut chain_path = "xyqon-chain.json".to_string();
+        let mut mempool_path = None;
         let mut recipient = None;
         let mut amount = None;
         let mut args = args.into_iter();
@@ -1061,6 +1107,12 @@ impl SubmitConfig {
                         .next()
                         .ok_or_else(|| "--chain requires a file path".to_string())?;
                 }
+                "--mempool" => {
+                    mempool_path = Some(
+                        args.next()
+                            .ok_or_else(|| "--mempool requires a file path".to_string())?,
+                    );
+                }
                 "--to" => {
                     recipient = Some(
                         args.next()
@@ -1081,12 +1133,14 @@ impl SubmitConfig {
             }
         }
 
+        let mempool_path = mempool_path.unwrap_or_else(|| default_mempool_path(&chain_path));
         Ok(SubmitConfig {
             peers,
             peers_file,
             wallet_path: wallet_path
                 .ok_or_else(|| "submit requires --wallet <FILE>".to_string())?,
             chain_path,
+            mempool_path,
             recipient: recipient.ok_or_else(|| "submit requires --to <RECIPIENT>".to_string())?,
             amount: amount.ok_or_else(|| "submit requires --amount <AMOUNT>".to_string())?,
         })
@@ -1100,6 +1154,7 @@ impl MineConfig {
         let mut peers_file = None;
         let mut wallet_path = None;
         let mut chain_path = "xyqon-chain.json".to_string();
+        let mut mempool_path = None;
         let mut advertised_addr = None;
         let mut interval_seconds = 1;
         let mut mine_empty_blocks = false;
@@ -1131,6 +1186,12 @@ impl MineConfig {
                         .next()
                         .ok_or_else(|| "--chain requires a file path".to_string())?;
                 }
+                "--mempool" => {
+                    mempool_path = Some(
+                        args.next()
+                            .ok_or_else(|| "--mempool requires a file path".to_string())?,
+                    );
+                }
                 "--interval" => {
                     let value = args
                         .next()
@@ -1144,12 +1205,14 @@ impl MineConfig {
             }
         }
 
+        let mempool_path = mempool_path.unwrap_or_else(|| default_mempool_path(&chain_path));
         Ok(MineConfig {
             listen_addr,
             peers,
             peers_file,
             wallet_path: wallet_path.ok_or_else(|| "mine requires --wallet <FILE>".to_string())?,
             chain_path,
+            mempool_path,
             advertised_addr,
             interval_seconds,
             mine_empty_blocks,
@@ -1290,6 +1353,7 @@ fn submit_transaction(config: SubmitConfig) -> Result<(), String> {
         peers: config.peers,
         peers_file: config.peers_file,
         chain_path: config.chain_path,
+        mempool_path: config.mempool_path,
         advertised_addr: None,
     })?;
 
@@ -1315,6 +1379,7 @@ fn run_miner(config: MineConfig) -> Result<(), String> {
         peers: config.peers,
         peers_file: config.peers_file,
         chain_path: config.chain_path,
+        mempool_path: config.mempool_path,
         advertised_addr: config.advertised_addr,
     })?;
 
@@ -1408,6 +1473,36 @@ fn save_blockchain(blockchain: &Blockchain, path: &str) -> Result<(), String> {
     let contents = serde_json::to_string_pretty(blockchain)
         .map_err(|error| format!("failed to serialize chain: {error}"))?;
     fs::write(path, contents).map_err(|error| format!("failed to save chain: {error}"))
+}
+
+fn load_mempool(path: &str) -> Result<Vec<Transaction>, String> {
+    if !Path::new(path).exists() {
+        return Ok(Vec::new());
+    }
+
+    let contents =
+        fs::read_to_string(path).map_err(|error| format!("failed to read mempool: {error}"))?;
+    serde_json::from_str(&contents).map_err(|error| format!("failed to parse mempool: {error}"))
+}
+
+fn save_mempool(mempool: &Arc<Mutex<Vec<Transaction>>>, path: &str) -> Result<(), String> {
+    if let Some(parent) = Path::new(path).parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("failed to create mempool directory: {error}"))?;
+        }
+    }
+
+    let mempool = mempool
+        .lock()
+        .map_err(|_| "mempool lock was poisoned".to_string())?;
+    let contents = serde_json::to_string_pretty(&*mempool)
+        .map_err(|error| format!("failed to serialize mempool: {error}"))?;
+    fs::write(path, contents).map_err(|error| format!("failed to save mempool: {error}"))
+}
+
+fn default_mempool_path(chain_path: &str) -> String {
+    format!("{chain_path}.mempool.json")
 }
 
 fn broadcast_transaction_to_peers(transaction: &Transaction, peers: &PeerBook) {
@@ -1559,6 +1654,45 @@ fn remove_block_transactions_from_mempool(
     Ok(())
 }
 
+fn build_candidate_block(
+    blockchain: &Blockchain,
+    mut transactions: Vec<Transaction>,
+    miner_reward_recipient: String,
+) -> Result<Block, String> {
+    if miner_reward_recipient.is_empty() {
+        return Err("miner reward recipient cannot be empty".to_string());
+    }
+
+    if !transactions
+        .iter()
+        .all(Transaction::is_valid_signed_transaction)
+    {
+        return Err("block contains an invalid transaction signature".to_string());
+    }
+
+    blockchain.validate_spending(&transactions)?;
+
+    let reward = blockchain.allowed_reward_for_next_block();
+    if reward <= 0.0 {
+        return Err(format!(
+            "max supply of {MAX_COIN_SUPPLY} XYQON has already been reached"
+        ));
+    }
+
+    transactions.insert(0, Transaction::coinbase(&miner_reward_recipient, reward));
+
+    let prev = blockchain.latest_block();
+    let timestamp = Utc::now().timestamp();
+    let difficulty = expected_difficulty_for_next_block(&blockchain.chain, timestamp);
+    Ok(Block::new(
+        prev.index + 1,
+        timestamp,
+        difficulty,
+        transactions,
+        prev.hash.clone(),
+    ))
+}
+
 fn mining_reward_for_block(block_index: u64) -> f64 {
     if block_index == 0 {
         return 0.0;
@@ -1574,15 +1708,42 @@ fn allowed_mining_reward_for_block(block_index: u64, current_supply: f64) -> f64
     scheduled_reward.min(remaining_supply)
 }
 
-fn expected_difficulty_for_next_block(previous: &Block, next_timestamp: i64) -> usize {
+fn expected_difficulty_for_next_block(chain: &[Block], next_timestamp: i64) -> usize {
+    let previous = chain.last().expect("chain should contain a genesis block");
+    let next_index = previous.index + 1;
+    if next_index < ROLLING_DIFFICULTY_START_BLOCK {
+        return legacy_expected_difficulty_for_next_block(previous, next_timestamp);
+    }
+
+    let non_genesis_blocks = chain.len().saturating_sub(1);
+    if non_genesis_blocks < 2 {
+        return previous.difficulty;
+    }
+
+    let window_size = non_genesis_blocks.min(DIFFICULTY_WINDOW_BLOCKS);
+    let first_index = chain.len() - window_size;
+    let first = &chain[first_index];
+    let elapsed_seconds = (next_timestamp - first.timestamp).max(1);
+    let expected_seconds = TARGET_BLOCK_TIME_SECONDS * window_size as i64;
+
+    if elapsed_seconds < expected_seconds {
+        previous.difficulty + 1
+    } else if elapsed_seconds > expected_seconds {
+        previous.difficulty.saturating_sub(1).max(MIN_DIFFICULTY)
+    } else {
+        previous.difficulty
+    }
+}
+
+fn legacy_expected_difficulty_for_next_block(previous: &Block, next_timestamp: i64) -> usize {
     if previous.index == 0 {
         return INITIAL_DIFFICULTY;
     }
 
     let elapsed_seconds = next_timestamp - previous.timestamp;
-    if elapsed_seconds < TARGET_BLOCK_TIME_SECONDS {
+    if elapsed_seconds < LEGACY_TARGET_BLOCK_TIME_SECONDS {
         previous.difficulty + 1
-    } else if elapsed_seconds > TARGET_BLOCK_TIME_SECONDS {
+    } else if elapsed_seconds > LEGACY_TARGET_BLOCK_TIME_SECONDS {
         previous.difficulty.saturating_sub(1).max(MIN_DIFFICULTY)
     } else {
         previous.difficulty
@@ -1629,6 +1790,7 @@ NODE OPTIONS:
   --peers-file <FILE>   Load peers from a newline-separated file and save discovered peers back to it
   --advertise <ADDR>    Public address this node announces to peers, for example 68.183.98.134:7101
   --chain <FILE>        Chain storage file. Defaults to xyqon-chain.json
+  --mempool <FILE>      Persistent mempool file. Defaults to <chain>.mempool.json
 
 SUBMIT OPTIONS:
   --wallet <FILE>       Wallet that signs the transaction
@@ -1637,6 +1799,7 @@ SUBMIT OPTIONS:
   --peer <ADDR>         Peer to broadcast the transaction to. Can be repeated
   --peers-file <FILE>   Load peers from a newline-separated file
   --chain <FILE>        Chain storage file. Defaults to xyqon-chain.json
+  --mempool <FILE>      Persistent mempool file. Defaults to <chain>.mempool.json
 
 MINE OPTIONS:
   --wallet <FILE>       Wallet that receives mining rewards
@@ -1645,6 +1808,7 @@ MINE OPTIONS:
   --peers-file <FILE>   Load peers from a newline-separated file
   --advertise <ADDR>    Public address this miner announces to peers
   --chain <FILE>        Chain storage file. Defaults to xyqon-chain.json
+  --mempool <FILE>      Persistent mempool file. Defaults to <chain>.mempool.json
   --interval <SECONDS>  Delay between mining attempts. Defaults to 1
   --mine-empty          Allow mining coinbase-only blocks when there are no pending transactions
 
@@ -1686,28 +1850,28 @@ mod tests {
     fn difficulty_adjusts_toward_30_second_blocks() {
         let mut previous = Blockchain::genesis_block();
         assert_eq!(
-            expected_difficulty_for_next_block(&previous, previous.timestamp + 5),
+            expected_difficulty_for_next_block(&[previous.clone()], previous.timestamp + 5),
             INITIAL_DIFFICULTY
         );
 
         previous.index = 1;
         previous.difficulty = 4;
         assert_eq!(
-            expected_difficulty_for_next_block(&previous, previous.timestamp + 29),
+            expected_difficulty_for_next_block(&[previous.clone()], previous.timestamp + 29),
             5
         );
         assert_eq!(
-            expected_difficulty_for_next_block(&previous, previous.timestamp + 30),
+            expected_difficulty_for_next_block(&[previous.clone()], previous.timestamp + 30),
             4
         );
         assert_eq!(
-            expected_difficulty_for_next_block(&previous, previous.timestamp + 31),
+            expected_difficulty_for_next_block(&[previous.clone()], previous.timestamp + 31),
             3
         );
 
         previous.difficulty = MIN_DIFFICULTY;
         assert_eq!(
-            expected_difficulty_for_next_block(&previous, previous.timestamp + 31),
+            expected_difficulty_for_next_block(&[previous.clone()], previous.timestamp + 31),
             MIN_DIFFICULTY
         );
     }

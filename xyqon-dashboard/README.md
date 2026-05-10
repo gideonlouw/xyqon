@@ -9,6 +9,8 @@ It shows:
 - Public addresses seen on-chain
 - Rich list sorted by balance
 - Recent blocks
+- Recent transactions
+- Explorer search for addresses, blocks, and transactions
 
 The browser app calls a local Node API proxy because browsers cannot speak XYQON's TCP protocol directly.
 
@@ -32,10 +34,22 @@ Edit `peers.txt` and add one node per line:
 ```text
 68.183.98.134
 143.244.149.8
+147.182.138.183
 ```
 
 You can also point the API at another peer file:
 
 ```bash
 XYQON_PEERS_FILE=/etc/xyqon/peers.txt npm start
+```
+
+## Local API
+
+The local API proxy exposes:
+
+```text
+/api/dashboard
+/api/address/<PUBLIC_KEY>
+/api/block/<HEIGHT_OR_HASH>
+/api/transaction/<TRANSACTION_ID>
 ```

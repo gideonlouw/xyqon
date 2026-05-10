@@ -191,6 +191,12 @@ xyqon mine \
 
 Use the `node` service for always-on relay nodes. Use `mine` only on servers that should compete for block rewards. Miners wait for pending transactions by default; add `--mine-empty` only if you intentionally want reward-only blocks.
 
+The mempool is persisted beside the chain by default:
+
+```text
+/var/lib/xyqon/xyqon-chain.json.mempool.json
+```
+
 Check the saved balance:
 
 ```bash
@@ -219,6 +225,7 @@ From your local machine or another server:
 ```bash
 nc -vz 68.183.98.134 7101
 nc -vz 143.244.149.8 7101
+nc -vz 147.182.138.183 7101
 ```
 
 If that fails, check:

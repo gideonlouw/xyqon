@@ -162,6 +162,48 @@ h2 {
   grid-template-columns: 56px minmax(240px, 1fr) 120px 120px 120px 120px;
 }
 
+.transactions .row {
+  grid-template-columns: 100px 80px minmax(240px, 1fr) 120px;
+}
+
+.searchbar {
+  padding: 16px;
+}
+
+.searchbar input {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid #c9d8e2;
+  border-radius: 6px;
+  padding: 0 12px;
+}
+
+.explorer-result {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1px;
+  background: #e5edf2;
+}
+
+.explorer-result article {
+  background: #fff;
+  padding: 14px 16px;
+  min-height: 112px;
+}
+
+.explorer-result span {
+  color: #647987;
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+}
+
+.explorer-result p {
+  margin: 0 0 10px;
+}
+
 .mono {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 12px;
