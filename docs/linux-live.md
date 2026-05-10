@@ -2,18 +2,15 @@
 
 This guide shows how to run XYQON as a public Linux node.
 
+The public node port used here is `7101`.
 
-## 1. Rent A Server
-
-A small Ubuntu LTS server is enough for early testing:
+## 1. Server Requirements
 
 - Ubuntu 22.04 or 24.04 LTS
 - 1 CPU
 - 1 GB RAM or more
 - Public IPv4 address
 - SSH access
-
-This guide uses port `7101`.
 
 ## 2. Install Server Packages
 
@@ -63,36 +60,66 @@ ufw enable
 ufw status
 ```
 
-Your cloud provider may also have a firewall/security group. Open TCP port `7101` there too.
+Your cloud provider may also have a firewall/security group. Open inbound TCP port `7101` there too.
 
-## 5. Create A Node User
+## 5. Create The Node User And Data Folders
 
 ```bash
 useradd --system --home /opt/xyqon --shell /usr/sbin/nologin xyqon
-mkdir -p /var/lib/xyqon
+mkdir -p /var/lib/xyqon /etc/xyqon
 chown -R xyqon:xyqon /opt/xyqon
-chown -R xyqon:xyqon /var/lib/xyqon
+chown -R xyqon:xyqon /var/lib/xyqon /etc/xyqon
 ```
 
-## 6. Run A Public Seed Node
+## 6. Create The Peer File
 
-For the first public node:
+Create `/etc/xyqon/peers.txt` with known public nodes. Each line may contain either an IP address or `IP:PORT`. If the port is omitted, XYQON uses `7101`.
 
 ```bash
-xyqon node --listen 0.0.0.0:7101
+cat >/etc/xyqon/peers.txt <<'EOF'
+68.183.98.134
+143.244.149.8
+EOF
+chown xyqon:xyqon /etc/xyqon/peers.txt
+chmod 664 /etc/xyqon/peers.txt
 ```
 
-Use `0.0.0.0` on Linux when you want the node to accept public connections.
+On a new node, include at least one existing reachable node in this file. The new node will announce itself to those peers when it starts.
 
-## 7. Run As A Service
+## 7. Start A Public Node Manually
+
+Replace `YOUR_SERVER_IP` with the server's public IPv4 address:
+
+```bash
+xyqon node \
+  --listen 0.0.0.0:7101 \
+  --advertise YOUR_SERVER_IP:7101 \
+  --peers-file /etc/xyqon/peers.txt \
+  --chain /var/lib/xyqon/xyqon-chain.json
+```
+
+Use `0.0.0.0` for `--listen` so the node accepts public connections. Use the public IP for `--advertise` so other nodes know how to connect back to this node.
+
+## 8. Run As A Service
 
 Copy the example service:
 
 ```bash
 cp /opt/xyqon/deploy/xyqon.service.example /etc/systemd/system/xyqon.service
+```
+
+Edit the service and replace `YOUR_SERVER_IP`:
+
+```bash
+nano /etc/systemd/system/xyqon.service
+```
+
+Enable and start the service:
+
+```bash
 systemctl daemon-reload
 systemctl enable xyqon
-systemctl start xyqon
+systemctl restart xyqon
 systemctl status xyqon
 ```
 
@@ -102,80 +129,87 @@ View logs:
 journalctl -u xyqon -f
 ```
 
-## 8. Join From Another Server
-
-On another Linux server:
+Confirm the node is listening:
 
 ```bash
-xyqon node --listen 0.0.0.0:7101 --peer 68.183.98.134:7101
+ss -ltnp | grep 7101
 ```
 
-On startup, the joining node requests the seed node's chain and adopts it if it is valid and has more accumulated work.
+## 9. Join As A New Node
 
-If the peer receives and accepts blocks, it will print messages like:
+On the new server:
 
-```text
-Accepted block 1 from peer
-```
+1. Build and install `xyqon`.
+2. Open TCP port `7101` in `ufw` and the cloud firewall.
+3. Add one or more existing public nodes to `/etc/xyqon/peers.txt`.
+4. Start the node with `--advertise NEW_NODE_PUBLIC_IP:7101`.
 
-## 9. Create A Wallet
+Example:
 
 ```bash
-xyqon wallet new --name MinerOne --out miner.wallet.json
-chmod 600 miner.wallet.json
+xyqon node \
+  --listen 0.0.0.0:7101 \
+  --advertise NEW_NODE_PUBLIC_IP:7101 \
+  --peers-file /etc/xyqon/peers.txt \
+  --chain /var/lib/xyqon/xyqon-chain.json
+```
+
+What happens next:
+
+- The new node reads `/etc/xyqon/peers.txt`.
+- It requests the current chain from known peers.
+- It adopts a valid chain if that chain has more accumulated work.
+- It announces `NEW_NODE_PUBLIC_IP:7101` to known peers.
+- Running peers save the new address into their own peer file and forward it to the peers they know.
+
+## 10. Create A Wallet
+
+```bash
+xyqon wallet new --name MinerOne --out /var/lib/xyqon/miner.wallet.json
+chown xyqon:xyqon /var/lib/xyqon/miner.wallet.json
+chmod 600 /var/lib/xyqon/miner.wallet.json
 ```
 
 Show the public key:
 
 ```bash
-xyqon wallet export --wallet miner.wallet.json
+xyqon wallet export --wallet /var/lib/xyqon/miner.wallet.json
 ```
 
-Keep `miner.wallet.json` private. Do not commit wallet files to Git.
+Keep wallet files private.
 
-## 10. Start mining 
-
-Start mining `10.0 XYQON` 
+## 11. Mine A Block
 
 ```bash
 xyqon node \
   --listen 0.0.0.0:7101 \
-  --wallet miner.wallet.json \
+  --advertise YOUR_SERVER_IP:7101 \
+  --peers-file /etc/xyqon/peers.txt \
+  --wallet /var/lib/xyqon/miner.wallet.json \
   --chain /var/lib/xyqon/xyqon-chain.json
 ```
 
-The first non-genesis block will contain a coinbase transaction:
-
-
-You should also see:
-
-```text
-Circulating supply: 10 / 67000000 XYQON
-Is blockchain valid? true
-```
-
-Check your saved balance:
+Check the saved balance:
 
 ```bash
 xyqon wallet balance \
-  --wallet miner.wallet.json \
+  --wallet /var/lib/xyqon/miner.wallet.json \
   --chain /var/lib/xyqon/xyqon-chain.json
 ```
 
-## 11. Mine A Transaction
+## 12. Verify Public Reachability
+
+From your local machine or another server:
 
 ```bash
-xyqon node \
-  --listen 0.0.0.0:7101 \
-  --peer 68.183.98.134:7101 \
-  --wallet miner.wallet.json \
-  --to Bob \
-  --amount 1
+nc -vz 68.183.98.134 7101
+nc -vz 143.244.149.8 7101
 ```
 
-The signed transaction enters the mempool, is mined into a block, and then the block is shared with peers.
+If that fails, check:
 
-3. Mine a test transaction and confirm the other node accepts the block.
-4. Add two or three more peers.
-5. Keep this as a testnet while peer discovery, wallet encryption, monitoring, and security review are still outstanding.
-
+- `systemctl status xyqon`
+- `journalctl -u xyqon -n 80 --no-pager`
+- `ss -ltnp | grep 7101`
+- `ufw status`
+- The cloud firewall/security group inbound rule for TCP `7101`

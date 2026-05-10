@@ -1,6 +1,6 @@
 # XYQON
 
-XYQON is a small Rust blockchain project with:
+XYQON is a Rust blockchain node with:
 
 - Proof-of-work blocks
 - Signed Ed25519 transactions
@@ -9,11 +9,11 @@ XYQON is a small Rust blockchain project with:
 - Dynamic mining difficulty targeting 30-second blocks
 - Mempool for pending signed transactions
 - Chain sync for late-joining peers
+- Peer discovery through a shared node list and peer announcements
 - Fork resolution using accumulated work
 - Balance validation to reject overspending
 - JSON wallet files
-- TCP peer-to-peer block sharing
-
+- TCP peer-to-peer block and transaction sharing
 
 ## Requirements
 
@@ -33,15 +33,7 @@ cargo --version
 cargo build
 ```
 
-If your normal `target` folder is locked by Windows, use a separate build folder:
-
-```powershell
-cargo build --target-dir target-codex
-```
-
-## Linux Server Deployment
-
-For public Linux node setup, firewall configuration, and systemd service instructions, see:
+For Linux server deployment, firewall setup, systemd setup, and joining instructions, see:
 
 [docs/linux-live.md](docs/linux-live.md)
 
@@ -51,39 +43,58 @@ For public Linux node setup, firewall configuration, and systemd service instruc
 cargo run -- help
 ```
 
-The app has two main command groups:
+The app has two command groups:
 
 - `node`: run a blockchain node
 - `wallet`: create or inspect wallet keys
 
-## Create A Wallet
+## Peer List
 
-Create a wallet for Alice:
+Nodes can load known peers from a newline-separated file. Each line may contain either an IP address or an `IP:PORT` address. If no port is supplied, XYQON uses port `7101`.
 
-```powershell
-cargo run -- wallet new --name Alice --out alice.wallet.json
+Example `peers.txt`:
+
+```text
+68.183.98.134
+143.244.149.8
 ```
 
-Create a wallet for Bob:
+Start a node with the file:
+
+```bash
+xyqon node \
+  --listen 0.0.0.0:7101 \
+  --advertise YOUR_PUBLIC_IP:7101 \
+  --peers-file /etc/xyqon/peers.txt \
+  --chain /var/lib/xyqon/xyqon-chain.json
+```
+
+When a node starts with `--advertise`, it announces that public address to the peers it already knows. Peers that receive the announcement add the new address to their in-memory peer list, save it back to their peer file, and forward the announcement to the rest of their known peers.
+
+This means a new node joins by:
+
+1. Adding at least one existing public node to its peer file.
+2. Starting with `--peers-file`.
+3. Starting with `--advertise NEW_NODE_PUBLIC_IP:7101`.
+
+## Create A Wallet
 
 ```powershell
-cargo run -- wallet new --name Bob --out bob.wallet.json
+cargo run -- wallet new --name MinerOne --out miner.wallet.json
 ```
 
 Wallet files contain both public and private keys. Keep private keys secret and do not commit wallet files to Git.
 
 ## Export Wallet Keys
 
-Show the wallet name and public key:
-
 ```powershell
-cargo run -- wallet export --wallet alice.wallet.json
+cargo run -- wallet export --wallet miner.wallet.json
 ```
 
-Show the private key too:
+Show the private key only when you intentionally need it:
 
 ```powershell
-cargo run -- wallet export --wallet alice.wallet.json --show-private
+cargo run -- wallet export --wallet miner.wallet.json --show-private
 ```
 
 ## Check Wallet Balance
@@ -102,113 +113,72 @@ xyqon wallet balance --wallet miner.wallet.json --chain /var/lib/xyqon/xyqon-cha
 
 ## Run A Node
 
-Start a node that listens for peer blocks:
+Start a local node that listens for peers:
 
 ```powershell
 cargo run -- node --listen 127.0.0.1:7101
 ```
 
-The node keeps running and waits for other peers to send valid blocks.
-On a public Linux server, listen on all interfaces:
+On a public Linux server, listen on all interfaces and advertise the public address:
 
 ```bash
-xyqon node --listen 0.0.0.0:7101
+xyqon node \
+  --listen 0.0.0.0:7101 \
+  --advertise 68.183.98.134:7101 \
+  --peers-file /etc/xyqon/peers.txt \
+  --chain /var/lib/xyqon/xyqon-chain.json
 ```
 
-By default, accepted blocks are saved to:
+The node keeps running, accepts valid blocks and transactions, syncs from known peers, and updates the peer file when new nodes announce themselves.
+
+## Join The Network
+
+Create or edit `/etc/xyqon/peers.txt` on the new server:
 
 ```text
-xyqon-chain.json
+68.183.98.134
+143.244.149.8
 ```
 
-Use a custom storage path with:
+Start the new node:
 
 ```bash
-xyqon node --listen 0.0.0.0:7101 --chain /var/lib/xyqon/xyqon-chain.json
+xyqon node \
+  --listen 0.0.0.0:7101 \
+  --advertise NEW_NODE_PUBLIC_IP:7101 \
+  --peers-file /etc/xyqon/peers.txt \
+  --chain /var/lib/xyqon/xyqon-chain.json
 ```
 
-## Join A Peer
-
-Open a second terminal and run another node that connects to the first node:
-
-```powershell
-cargo run -- node --listen 127.0.0.1:7102 --peer 127.0.0.1:7101
-```
-
-You can add more peers by repeating `--peer`:
-
-```powershell
-cargo run -- node --listen 127.0.0.1:7103 --peer 127.0.0.1:7101 --peer 127.0.0.1:7102
-```
-
-When a node starts with peers, it requests their chain and adopts a better valid chain if one is available.
+On startup, the joining node requests chains from known peers and adopts a valid chain with more accumulated work. It also announces its own public address so other running nodes can discover it.
 
 ## Mine And Share A Signed Transaction
 
-Run a node that loads a wallet and mines the first block. If you omit `--to`, the block contains only the coinbase reward and pays the first `10.0 XYQON` to your wallet public key:
+Run a node that loads a wallet and mines the next block. If you omit `--to`, the block contains only the coinbase reward and pays the current reward to your wallet public key:
 
 ```bash
-xyqon node --listen 0.0.0.0:7101 --wallet miner.wallet.json
+xyqon node \
+  --listen 0.0.0.0:7101 \
+  --advertise YOUR_PUBLIC_IP:7101 \
+  --peers-file /etc/xyqon/peers.txt \
+  --wallet miner.wallet.json \
+  --chain /var/lib/xyqon/xyqon-chain.json
 ```
 
-To also create a signed transaction at startup, add `--to` and `--amount`. The transaction is placed into the mempool, then mined into the block:
+To also create a signed transaction at startup, add `--to` and `--amount`:
 
-```powershell
-cargo run -- node --listen 127.0.0.1:7102 --peer 127.0.0.1:7101 --wallet alice.wallet.json --to Bob --amount 25
+```bash
+xyqon node \
+  --listen 0.0.0.0:7101 \
+  --advertise YOUR_PUBLIC_IP:7101 \
+  --peers-file /etc/xyqon/peers.txt \
+  --wallet miner.wallet.json \
+  --to RECIPIENT_PUBLIC_KEY \
+  --amount 1 \
+  --chain /var/lib/xyqon/xyqon-chain.json
 ```
 
-The miner receives a coinbase reward transaction in the mined block. The current reward is:
-
-```text
-10.0 XYQON initially
-```
-
-The reward halves every 100,000 mined blocks:
-
-```text
-Blocks 1 - 100,000:       10.0 XYQON
-Blocks 100,001 - 200,000: 5.0 XYQON
-Blocks 200,001 - 300,000: 2.5 XYQON
-```
-
-When mining with `--wallet`, the reward is paid to that wallet's public key.
-
-Mining difficulty adjusts dynamically to target one block every 30 seconds:
-
-```text
-Faster than 30 seconds: difficulty increases by 1
-Exactly 30 seconds:    difficulty stays the same
-Slower than 30 seconds: difficulty decreases by 1, down to a minimum of 1
-```
-
-Each block stores the difficulty it was mined with, and nodes verify that the difficulty matches the expected value before accepting the block.
-
-The total supply is capped at:
-
-```text
-67,000,000 XYQON
-```
-
-Nodes reject locally mined or peer-received blocks if the coinbase reward would push total issued supply above that cap.
-Each node tracks circulating supply from accepted coinbase transactions and prints it with the chain.
-If the remaining supply is smaller than the scheduled reward, the only valid coinbase reward is the remaining supply.
-Once circulating supply reaches 67,000,000 XYQON, no more mining rewards can be minted.
-
-If the peer accepts the block, it prints:
-
-```text
-Accepted block 1 from peer
-```
-
-The local node also prints the number of pending transactions left in the mempool after mining.
-
-## Demo Mining
-
-For a quick test without creating a wallet first:
-
-```powershell
-cargo run -- node --listen 127.0.0.1:7102 --peer 127.0.0.1:7101 --mine-demo
-```
+The reward starts at `10.0 XYQON` and halves every `100,000` mined blocks. Total supply is capped at `67,000,000 XYQON`.
 
 ## How Block Sharing Works
 
@@ -217,10 +187,14 @@ Nodes send one JSON message per line over TCP:
 ```text
 NewBlock(Block)
 NewTransaction(Transaction)
+NewPeer(String)
+RequestChain
+ChainResponse(Blockchain)
 ```
 
-When a node receives a transaction, it checks the signature, rejects duplicates, stores the transaction in its mempool, and shares it with its configured peers.
-Transactions are also checked against confirmed balances plus already pending spends, so wallets cannot queue transactions that overspend available funds.
+When a node receives a peer announcement, it validates the address format, adds the peer if it is new, saves it to the configured peer file, and forwards the announcement to known peers.
+
+When a node receives a transaction, it checks the signature, rejects duplicates, stores the transaction in its mempool, and shares it with peers. Transactions are checked against confirmed balances plus pending spends.
 
 When a node receives a block, it checks:
 
@@ -230,24 +204,14 @@ When a node receives a block, it checks:
 - The difficulty is correct for the 30-second block target
 - The first transaction is the correct coinbase reward for that block height
 - The total coin supply does not exceed 67,000,000 XYQON
-- The coinbase reward does not exceed the remaining unissued supply
 - Every normal transaction signature is valid
 - Every normal transaction has enough confirmed balance to spend
 
-If the block is accepted, the node appends it to its local chain and shares it with its configured peers.
-Transactions included in accepted blocks are removed from the local mempool.
+If the block is accepted, the node appends it to its local chain, saves it, removes confirmed transactions from the mempool, and shares the block with known peers.
 
-If a peer returns a valid chain with more accumulated work than the local chain, the node adopts that chain and saves it.
+## Current Operational Notes
 
-## Current Limitations
-
-- There is no automatic peer discovery yet
-- Wallet files are plain JSON and not encrypted
-- Each CLI startup can mine one transaction, then the node continues listening
-- The mempool is in memory only and is lost when the node exits
-
-## Suggested Next Steps
-
-- Add persistent mempool storage
-- Add automatic peer discovery
-- Encrypt wallet private keys with a passphrase
+- Keep `/etc/xyqon/peers.txt` writable by the `xyqon` service user so discovered peers can be saved.
+- Wallet files are plain JSON and are not encrypted.
+- Each CLI startup with `--wallet` mines one block, then the node continues listening.
+- The mempool is in memory only and is lost when the node exits.

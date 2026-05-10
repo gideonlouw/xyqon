@@ -21,6 +21,7 @@ const INITIAL_MINING_REWARD: f64 = 10.0;
 const HALVING_INTERVAL: u64 = 100_000;
 const MAX_COIN_SUPPLY: f64 = 67_000_000.0;
 const BALANCE_EPSILON: f64 = 0.000_000_01;
+const DEFAULT_PEER_PORT: u16 = 7101;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Transaction {
@@ -550,24 +551,131 @@ impl Blockchain {
 enum NetworkMessage {
     NewBlock(Block),
     NewTransaction(Transaction),
+    NewPeer(String),
     RequestChain,
     ChainResponse(Blockchain),
+}
+
+#[derive(Debug, Clone)]
+struct PeerBook {
+    peers: Arc<Mutex<Vec<String>>>,
+    peers_file: Option<String>,
+    local_addr: Option<String>,
+}
+
+impl PeerBook {
+    fn new(
+        peers: Vec<String>,
+        peers_file: Option<String>,
+        local_addr: Option<String>,
+    ) -> Result<Self, String> {
+        let peer_book = PeerBook {
+            peers: Arc::new(Mutex::new(Vec::new())),
+            peers_file,
+            local_addr: local_addr.and_then(|addr| normalize_peer_address(&addr)),
+        };
+
+        peer_book.extend(peers)?;
+
+        if let Some(path) = peer_book.peers_file.as_deref() {
+            peer_book.extend(load_peers_from_file(path)?)?;
+        }
+
+        peer_book.persist()?;
+        Ok(peer_book)
+    }
+
+    fn add(&self, peer: String) -> Result<bool, String> {
+        let Some(peer) = normalize_peer_address(&peer) else {
+            return Err(format!("invalid peer address: {peer}"));
+        };
+
+        if peer_book_is_local(&self.local_addr, &peer) {
+            return Ok(false);
+        }
+
+        let added = {
+            let mut peers = self
+                .peers
+                .lock()
+                .map_err(|_| "peer list lock was poisoned".to_string())?;
+            if peers.iter().any(|existing| existing == &peer) {
+                false
+            } else {
+                peers.push(peer);
+                peers.sort();
+                true
+            }
+        };
+
+        if added {
+            self.persist()?;
+        }
+
+        Ok(added)
+    }
+
+    fn extend(&self, peers: Vec<String>) -> Result<(), String> {
+        for peer in peers {
+            self.add(peer)?;
+        }
+        Ok(())
+    }
+
+    fn snapshot(&self) -> Vec<String> {
+        self.peers
+            .lock()
+            .map(|peers| peers.clone())
+            .unwrap_or_else(|_| Vec::new())
+    }
+
+    fn persist(&self) -> Result<(), String> {
+        let Some(path) = self.peers_file.as_deref() else {
+            return Ok(());
+        };
+
+        if let Some(parent) = Path::new(path).parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)
+                    .map_err(|error| format!("failed to create peer file directory: {error}"))?;
+            }
+        }
+
+        let peers = self
+            .peers
+            .lock()
+            .map_err(|_| "peer list lock was poisoned".to_string())?;
+        let contents = if peers.is_empty() {
+            String::new()
+        } else {
+            format!("{}\n", peers.join("\n"))
+        };
+        fs::write(path, contents).map_err(|error| format!("failed to save peer file: {error}"))
+    }
 }
 
 struct Node {
     blockchain: Arc<Mutex<Blockchain>>,
     mempool: Arc<Mutex<Vec<Transaction>>>,
-    peers: Vec<String>,
+    peers: PeerBook,
     chain_path: String,
+    advertised_addr: Option<String>,
 }
 
 impl Node {
-    fn new(peers: Vec<String>, chain_path: String) -> Result<Self, String> {
+    fn new(config: NodeConfig) -> Result<Self, String> {
+        let peers = PeerBook::new(
+            config.peers,
+            config.peers_file,
+            config.advertised_addr.clone(),
+        )?;
+
         Ok(Node {
-            blockchain: Arc::new(Mutex::new(Blockchain::load_or_new(&chain_path)?)),
+            blockchain: Arc::new(Mutex::new(Blockchain::load_or_new(&config.chain_path)?)),
             mempool: Arc::new(Mutex::new(Vec::new())),
             peers,
-            chain_path,
+            chain_path: config.chain_path,
+            advertised_addr: config.advertised_addr,
         })
     }
 
@@ -637,9 +745,17 @@ impl Node {
         broadcast_transaction_to_peers(transaction, &self.peers);
     }
 
+    fn announce_self(&self) {
+        let Some(advertised_addr) = self.advertised_addr.as_deref() else {
+            return;
+        };
+
+        broadcast_peer_to_peers(advertised_addr, &self.peers);
+    }
+
     fn sync_chain_from_peers(&self) {
-        for peer in &self.peers {
-            match request_chain_from_peer(peer) {
+        for peer in self.peers.snapshot() {
+            match request_chain_from_peer(&peer) {
                 Ok(candidate) => {
                     let result = self
                         .blockchain
@@ -690,7 +806,7 @@ fn handle_peer_stream(
     stream: TcpStream,
     blockchain: Arc<Mutex<Blockchain>>,
     mempool: Arc<Mutex<Vec<Transaction>>>,
-    peers: Vec<String>,
+    peers: PeerBook,
     chain_path: String,
 ) {
     let mut reader = BufReader::new(stream);
@@ -750,6 +866,14 @@ fn handle_peer_stream(
                     Err(error) => eprintln!("Rejected transaction {transaction_id}: {error}"),
                 }
             }
+            NetworkMessage::NewPeer(peer) => match peers.add(peer.clone()) {
+                Ok(true) => {
+                    println!("Discovered peer {peer}");
+                    broadcast_peer_to_peers(&peer, &peers);
+                }
+                Ok(false) => println!("Already know peer {peer}"),
+                Err(error) => eprintln!("Rejected peer announcement {peer}: {error}"),
+            },
             NetworkMessage::RequestChain => {
                 let response = blockchain
                     .lock()
@@ -787,9 +911,11 @@ enum Command {
 struct NodeConfig {
     listen_addr: Option<String>,
     peers: Vec<String>,
-    mine_demo_block: bool,
+    peers_file: Option<String>,
+    mine_startup_block: bool,
     wallet_path: Option<String>,
     chain_path: String,
+    advertised_addr: Option<String>,
     recipient: Option<String>,
     amount: f64,
 }
@@ -833,9 +959,11 @@ impl NodeConfig {
     fn from_args(args: Vec<String>) -> Result<Self, String> {
         let mut listen_addr = None;
         let mut peers = Vec::new();
-        let mut mine_demo_block = false;
+        let mut peers_file = None;
+        let mut mine_startup_block = false;
         let mut wallet_path = None;
         let mut chain_path = "xyqon-chain.json".to_string();
+        let mut advertised_addr = None;
         let mut recipient = None;
         let mut amount = 1.0;
         let mut args = args.into_iter();
@@ -848,7 +976,19 @@ impl NodeConfig {
                         peers.push(peer);
                     }
                 }
-                "--mine-demo" => mine_demo_block = true,
+                "--peers-file" => {
+                    peers_file = Some(
+                        args.next()
+                            .ok_or_else(|| "--peers-file requires a file path".to_string())?,
+                    );
+                }
+                "--advertise" => {
+                    advertised_addr = Some(
+                        args.next()
+                            .ok_or_else(|| "--advertise requires an address".to_string())?,
+                    );
+                }
+                "--mine" => mine_startup_block = true,
                 "--wallet" => wallet_path = args.next(),
                 "--chain" => {
                     chain_path = args
@@ -876,9 +1016,11 @@ impl NodeConfig {
         Ok(NodeConfig {
             listen_addr,
             peers,
-            mine_demo_block,
+            peers_file,
+            mine_startup_block,
             wallet_path,
             chain_path,
+            advertised_addr,
             recipient,
             amount,
         })
@@ -985,43 +1127,42 @@ fn run() -> Result<(), String> {
 }
 
 fn run_node(config: NodeConfig) -> Result<(), String> {
-    let has_listener = config.listen_addr.is_some();
-    let node = Node::new(config.peers, config.chain_path)?;
+    let listen_addr = config.listen_addr.clone();
+    let wallet_path = config.wallet_path.clone();
+    let recipient = config.recipient.clone();
+    let amount = config.amount;
+    let has_listener = listen_addr.is_some();
+    let mine_startup_block = config.mine_startup_block;
+    let has_wallet = wallet_path.is_some();
+    let should_stay_alive = has_listener || !config.peers.is_empty() || config.peers_file.is_some();
+    let node = Node::new(config)?;
 
-    if let Some(listen_addr) = config.listen_addr {
+    if let Some(listen_addr) = listen_addr {
         node.start_listener(listen_addr);
     }
 
     node.sync_chain_from_peers();
+    node.announce_self();
 
-    if let Some(wallet_path) = config.wallet_path {
+    if let Some(wallet_path) = wallet_path {
         let wallet = WalletFile::load(&wallet_path)?;
         let signing_key = wallet.signing_key()?;
-        if let Some(recipient) = config.recipient {
+        if let Some(recipient) = recipient {
             node.submit_transaction(Transaction::new(
                 &wallet.name,
                 &recipient,
-                config.amount,
+                amount,
                 &signing_key,
             ))?;
         }
         node.mine_pending_transactions(wallet.public_key)?;
-    } else if config.mine_demo_block || (!has_listener && node.peers.is_empty()) {
-        let demo_wallet = WalletFile::generate("demo".to_string());
-        let signing_key = demo_wallet.signing_key()?;
-
-        node.submit_transaction(Transaction::new(
-            &demo_wallet.name,
-            "network",
-            1.0,
-            &signing_key,
-        ))?;
-        node.mine_pending_transactions(demo_wallet.public_key)?;
+    } else if mine_startup_block {
+        return Err("mining requires --wallet <FILE>".to_string());
     }
 
     node.print_chain();
 
-    if has_listener || !node.peers.is_empty() {
+    if should_stay_alive || has_wallet {
         loop {
             thread::sleep(Duration::from_secs(60));
         }
@@ -1077,25 +1218,9 @@ fn show_wallet_balance(config: WalletBalanceConfig) -> Result<(), String> {
     Ok(())
 }
 
-fn broadcast_block_to_peers(block: &Block, peers: &[String]) {
+fn broadcast_block_to_peers(block: &Block, peers: &PeerBook) {
     let message = NetworkMessage::NewBlock(block.clone());
-    let Ok(serialized) = serde_json::to_string(&message) else {
-        eprintln!("Failed to serialize block for broadcast");
-        return;
-    };
-
-    for peer in peers {
-        match TcpStream::connect(peer) {
-            Ok(mut stream) => {
-                if let Err(error) = writeln!(stream, "{serialized}") {
-                    eprintln!("Failed to send block to {peer}: {error}");
-                } else {
-                    println!("Shared block {} with {peer}", block.index);
-                }
-            }
-            Err(error) => eprintln!("Could not connect to peer {peer}: {error}"),
-        }
-    }
+    send_message_to_peers(&message, peers, "block", &block.index.to_string());
 }
 
 fn save_blockchain(blockchain: &Blockchain, path: &str) -> Result<(), String> {
@@ -1111,25 +1236,69 @@ fn save_blockchain(blockchain: &Blockchain, path: &str) -> Result<(), String> {
     fs::write(path, contents).map_err(|error| format!("failed to save chain: {error}"))
 }
 
-fn broadcast_transaction_to_peers(transaction: &Transaction, peers: &[String]) {
+fn broadcast_transaction_to_peers(transaction: &Transaction, peers: &PeerBook) {
     let message = NetworkMessage::NewTransaction(transaction.clone());
+    send_message_to_peers(&message, peers, "transaction", &transaction.id());
+}
+
+fn broadcast_peer_to_peers(peer: &str, peers: &PeerBook) {
+    let message = NetworkMessage::NewPeer(peer.to_string());
+    send_message_to_peers(&message, peers, "peer", peer);
+}
+
+fn send_message_to_peers(message: &NetworkMessage, peers: &PeerBook, label: &str, id: &str) {
     let Ok(serialized) = serde_json::to_string(&message) else {
-        eprintln!("Failed to serialize transaction for broadcast");
+        eprintln!("Failed to serialize {label} for broadcast");
         return;
     };
 
-    for peer in peers {
-        match TcpStream::connect(peer) {
+    for peer in peers.snapshot() {
+        match TcpStream::connect(&peer) {
             Ok(mut stream) => {
                 if let Err(error) = writeln!(stream, "{serialized}") {
-                    eprintln!("Failed to send transaction to {peer}: {error}");
+                    eprintln!("Failed to send {label} to {peer}: {error}");
                 } else {
-                    println!("Shared transaction {} with {peer}", transaction.id());
+                    println!("Shared {label} {id} with {peer}");
                 }
             }
             Err(error) => eprintln!("Could not connect to peer {peer}: {error}"),
         }
     }
+}
+
+fn load_peers_from_file(path: &str) -> Result<Vec<String>, String> {
+    if !Path::new(path).exists() {
+        return Ok(Vec::new());
+    }
+
+    let contents =
+        fs::read_to_string(path).map_err(|error| format!("failed to read peer file: {error}"))?;
+
+    let peers = contents
+        .lines()
+        .filter_map(normalize_peer_address)
+        .collect();
+    Ok(peers)
+}
+
+fn normalize_peer_address(address: &str) -> Option<String> {
+    let address = address.split('#').next()?.trim();
+    if address.is_empty() {
+        return None;
+    }
+
+    if address.contains(':') {
+        Some(address.to_string())
+    } else {
+        Some(format!("{address}:{DEFAULT_PEER_PORT}"))
+    }
+}
+
+fn peer_book_is_local(local_addr: &Option<String>, peer: &str) -> bool {
+    local_addr
+        .as_deref()
+        .map(|local_addr| local_addr == peer)
+        .unwrap_or(false)
 }
 
 fn request_chain_from_peer(peer: &str) -> Result<Blockchain, String> {
@@ -1281,11 +1450,13 @@ USAGE:
 NODE OPTIONS:
   --listen <ADDR>       Listen for peer blocks, for example 127.0.0.1:7101 or 0.0.0.0:7101 on Linux
   --peer <ADDR>         Add a peer to share accepted blocks with. Can be repeated
+  --peers-file <FILE>   Load peers from a newline-separated file and save discovered peers back to it
+  --advertise <ADDR>    Public address this node announces to peers, for example 68.183.98.134:7101
   --wallet <FILE>       Wallet used to mine at startup; omit --to for a coinbase-only block
   --chain <FILE>        Chain storage file. Defaults to xyqon-chain.json
   --to <RECIPIENT>      Optional recipient name for a startup transaction
   --amount <AMOUNT>     Amount for the startup transaction
-  --mine-demo           Mine a demo block at startup
+  --mine                Mine a startup block; requires --wallet
 
 MINING:
   Signed startup transactions enter the mempool before they are mined.
