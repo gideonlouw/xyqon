@@ -1,0 +1,41 @@
+# XYQON Dashboard
+
+Angular dashboard for the live XYQON network.
+
+It shows:
+
+- Live node reachability
+- Current block height and circulating supply
+- Public addresses seen on-chain
+- Rich list sorted by balance
+- Recent blocks
+
+The browser app calls a local Node API proxy because browsers cannot speak XYQON's TCP protocol directly.
+
+## Run
+
+```bash
+npm install
+npm start
+```
+
+Open:
+
+```text
+http://127.0.0.1:4200
+```
+
+## Configure Nodes
+
+Edit `peers.txt` and add one node per line:
+
+```text
+68.183.98.134
+143.244.149.8
+```
+
+You can also point the API at another peer file:
+
+```bash
+XYQON_PEERS_FILE=/etc/xyqon/peers.txt npm start
+```

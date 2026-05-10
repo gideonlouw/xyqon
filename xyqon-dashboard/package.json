@@ -1,0 +1,28 @@
+{
+  "name": "xyqon-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node tools/dev.mjs",
+    "start:api": "node server/xyqon-api.mjs",
+    "start:web": "ng serve --host 127.0.0.1 --port 4200",
+    "build": "ng build",
+    "test:api": "node server/xyqon-api.mjs --once"
+  },
+  "dependencies": {
+    "@angular/common": "^19.2.0",
+    "@angular/compiler": "^19.2.0",
+    "@angular/core": "^19.2.0",
+    "@angular/forms": "^19.2.0",
+    "@angular/platform-browser": "^19.2.0",
+    "rxjs": "^7.8.1",
+    "tslib": "^2.6.2",
+    "zone.js": "^0.15.0"
+  },
+  "devDependencies": {
+    "@angular-devkit/build-angular": "^19.2.0",
+    "@angular/cli": "^19.2.0",
+    "@angular/compiler-cli": "^19.2.0",
+    "typescript": "~5.8.0"
+  }
+}

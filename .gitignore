@@ -2,5 +2,11 @@
 /target-codex
 *.wallet.json
 wallet.json
+xyqon-chain.json
 *.log
 .upload-work*
+node_modules/
+dist/
+.angular/
+.npm-cache/
+.npm-global/
