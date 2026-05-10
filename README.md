@@ -204,9 +204,12 @@ NewTransaction(Transaction)
 NewPeer(String)
 RequestChain
 ChainResponse(Blockchain)
+RequestPeers
+PeerResponse(Vec<String>)
 ```
 
 When a node receives a peer announcement, it validates the address format, adds the peer if it is new, saves it to the configured peer file, and forwards the announcement to known peers.
+Dashboards and other tools can also request a node's known peers with `RequestPeers`, then crawl from those seed nodes to discover more of the network.
 
 When a node receives a transaction, it checks the signature, rejects duplicates, stores the transaction in its mempool, and shares it with peers. Transactions are checked against confirmed balances plus pending spends.
 

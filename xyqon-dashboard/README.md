@@ -29,7 +29,7 @@ http://127.0.0.1:4200
 
 ## Configure Nodes
 
-Edit `peers.txt` and add one node per line:
+Edit `peers.txt` and add one or more seed nodes:
 
 ```text
 68.183.98.134
@@ -37,10 +37,18 @@ Edit `peers.txt` and add one node per line:
 147.182.138.183
 ```
 
+The dashboard uses these as seed nodes only. On each refresh, it asks reachable nodes for their known peers, checks the discovered nodes too, and saves the expanded list back into `peers.txt`.
+
 You can also point the API at another peer file:
 
 ```bash
 XYQON_PEERS_FILE=/etc/xyqon/peers.txt npm start
+```
+
+To disable saving discovered peers back to the file:
+
+```bash
+XYQON_DASHBOARD_SAVE_PEERS=false npm start
 ```
 
 ## Local API

@@ -557,6 +557,8 @@ enum NetworkMessage {
     NewPeer(String),
     RequestChain,
     ChainResponse(Blockchain),
+    RequestPeers,
+    PeerResponse(Vec<String>),
 }
 
 #[derive(Debug, Clone)]
@@ -931,8 +933,22 @@ fn handle_peer_stream(
                     Err(_) => eprintln!("Could not read chain for sync response"),
                 }
             }
+            NetworkMessage::RequestPeers => {
+                let response = NetworkMessage::PeerResponse(peers.snapshot());
+                match serde_json::to_string(&response) {
+                    Ok(serialized) => {
+                        if let Err(error) = writeln!(reader.get_mut(), "{serialized}") {
+                            eprintln!("Failed to send peer response: {error}");
+                        }
+                    }
+                    Err(error) => eprintln!("Failed to serialize peer response: {error}"),
+                }
+            }
             NetworkMessage::ChainResponse(_) => {
                 eprintln!("Unexpected chain response on listener connection");
+            }
+            NetworkMessage::PeerResponse(_) => {
+                eprintln!("Unexpected peer response on listener connection");
             }
         }
     }

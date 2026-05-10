@@ -1,7 +1,7 @@
 import http from 'node:http';
 import net from 'node:net';
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,6 +25,16 @@ async function readConfiguredPeers() {
   return [...new Set(peers.length ? peers : defaultPeers)];
 }
 
+async function saveDiscoveredPeers(peers) {
+  const filePath = process.env.XYQON_PEERS_FILE ?? join(rootDir, 'peers.txt');
+  if (process.env.XYQON_DASHBOARD_SAVE_PEERS === 'false') {
+    return;
+  }
+
+  const contents = `${[...new Set(peers)].sort().join('\n')}\n`;
+  await writeFile(filePath, contents, 'utf8');
+}
+
 function normalizePeer(peer) {
   const value = peer.split('#')[0].trim();
   if (!value) {
@@ -33,7 +43,7 @@ function normalizePeer(peer) {
   return value.includes(':') ? value : `${value}:7101`;
 }
 
-function requestChain(peer, timeoutMs = 3500) {
+function requestMessage(peer, messageName, responseKey, timeoutMs = 3500) {
   return new Promise((resolve) => {
     const startedAt = Date.now();
     const [host, portText] = peer.split(':');
@@ -51,7 +61,7 @@ function requestChain(peer, timeoutMs = 3500) {
     };
 
     socket.setTimeout(timeoutMs);
-    socket.on('connect', () => socket.write('"RequestChain"\n'));
+    socket.on('connect', () => socket.write(`"${messageName}"\n`));
     socket.on('data', (chunk) => {
       data += chunk.toString('utf8');
       if (!data.includes('\n')) {
@@ -60,12 +70,12 @@ function requestChain(peer, timeoutMs = 3500) {
 
       try {
         const message = JSON.parse(data.trim());
-        const chain = message.ChainResponse;
-        if (!chain) {
-          finish({ peer, online: false, latencyMs: Date.now() - startedAt, error: 'No chain response' });
+        const payload = message[responseKey];
+        if (!payload) {
+          finish({ peer, online: false, latencyMs: Date.now() - startedAt, error: `No ${responseKey} response` });
           return;
         }
-        finish({ peer, online: true, latencyMs: Date.now() - startedAt, chain, error: null });
+        finish({ peer, online: true, latencyMs: Date.now() - startedAt, payload, error: null });
       } catch (error) {
         finish({ peer, online: false, latencyMs: Date.now() - startedAt, error: error.message });
       }
@@ -73,6 +83,46 @@ function requestChain(peer, timeoutMs = 3500) {
     socket.on('timeout', () => finish({ peer, online: false, latencyMs: null, error: 'Timeout' }));
     socket.on('error', (error) => finish({ peer, online: false, latencyMs: null, error: error.message }));
   });
+}
+
+async function requestChain(peer, timeoutMs = 3500) {
+  const result = await requestMessage(peer, 'RequestChain', 'ChainResponse', timeoutMs);
+  return { ...result, chain: result.payload };
+}
+
+async function requestPeers(peer, timeoutMs = 2500) {
+  const result = await requestMessage(peer, 'RequestPeers', 'PeerResponse', timeoutMs);
+  return {
+    ...result,
+    peers: Array.isArray(result.payload) ? result.payload.map(normalizePeer).filter(Boolean) : []
+  };
+}
+
+async function discoverPeers(seedPeers) {
+  const discovered = new Set(seedPeers);
+  let frontier = seedPeers;
+
+  for (let depth = 0; depth < 2 && frontier.length > 0; depth += 1) {
+    const responses = await Promise.all(frontier.map((peer) => requestPeers(peer)));
+    const next = [];
+    for (const response of responses) {
+      if (!response.online) {
+        continue;
+      }
+
+      for (const peer of response.peers) {
+        if (!discovered.has(peer)) {
+          discovered.add(peer);
+          next.push(peer);
+        }
+      }
+    }
+    frontier = next;
+  }
+
+  const peers = [...discovered].sort();
+  await saveDiscoveredPeers(peers);
+  return peers;
 }
 
 function chainScore(chain) {
@@ -136,7 +186,8 @@ function flattenTransactions(chain) {
 }
 
 async function getNetworkSnapshot() {
-  const knownPeers = await readConfiguredPeers();
+  const seedPeers = await readConfiguredPeers();
+  const knownPeers = await discoverPeers(seedPeers);
   const results = await Promise.all(knownPeers.map((peer) => requestChain(peer)));
   const nodes = results.map((result) => ({
     address: result.peer,
@@ -153,11 +204,11 @@ async function getNetworkSnapshot() {
     .sort((a, b) => chainScore(b.chain) - chainScore(a.chain))[0];
 
   const chain = best?.chain ?? { chain: [], circulating_supply: 0 };
-  return { knownPeers, results, nodes, best, chain };
+  return { knownPeers, seedPeers, results, nodes, best, chain };
 }
 
 async function getDashboard() {
-  const { knownPeers, nodes, best, chain } = await getNetworkSnapshot();
+  const { knownPeers, seedPeers, nodes, best, chain } = await getNetworkSnapshot();
   const latestBlock = chain.chain.at(-1) ?? null;
   const balances = buildBalances(chain);
   const transactions = flattenTransactions(chain);
@@ -165,6 +216,7 @@ async function getDashboard() {
   return {
     generatedAt: new Date().toISOString(),
     sourceNode: best?.peer ?? null,
+    seedPeers,
     knownPeers,
     nodes,
     chain: {
