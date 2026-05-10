@@ -3,7 +3,7 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -19,6 +19,7 @@ const TARGET_BLOCK_TIME_SECONDS: i64 = 60;
 const LEGACY_TARGET_BLOCK_TIME_SECONDS: i64 = 30;
 const DIFFICULTY_WINDOW_BLOCKS: usize = 10;
 const ROLLING_DIFFICULTY_START_BLOCK: u64 = 6;
+const REPLAY_PROTECTION_START_BLOCK: u64 = 10;
 const GENESIS_TIMESTAMP: i64 = 1_700_000_000;
 const INITIAL_MINING_REWARD: f64 = 10.0;
 const HALVING_INTERVAL: u64 = 100_000;
@@ -469,6 +470,7 @@ impl Blockchain {
     fn is_valid(&self) -> bool {
         let mut total_supply = 0.0;
         let mut balances = WalletBalances::new();
+        let mut confirmed_transaction_ids = HashSet::new();
 
         for i in 1..self.chain.len() {
             let current = &self.chain[i];
@@ -483,6 +485,15 @@ impl Blockchain {
 
             if current.previous_hash != previous.hash {
                 return false;
+            }
+
+            for transaction in current.normal_transactions() {
+                let transaction_id = transaction.id();
+                if current.index < REPLAY_PROTECTION_START_BLOCK {
+                    confirmed_transaction_ids.insert(transaction_id);
+                } else if !confirmed_transaction_ids.insert(transaction_id) {
+                    return false;
+                }
             }
 
             if !balances.apply_block(current) {
@@ -520,11 +531,26 @@ impl Blockchain {
 
     fn validate_spending(&self, transactions: &[Transaction]) -> Result<(), String> {
         let mut balances = WalletBalances::from_chain(&self.chain);
+        let mut seen_transaction_ids = self.confirmed_transaction_ids();
         for transaction in transactions {
+            let transaction_id = transaction.id();
+            if !seen_transaction_ids.insert(transaction_id.clone()) {
+                return Err(format!(
+                    "transaction has already been confirmed: {transaction_id}"
+                ));
+            }
             balances.apply_signed_transaction(transaction)?;
         }
 
         Ok(())
+    }
+
+    fn confirmed_transaction_ids(&self) -> HashSet<String> {
+        self.chain
+            .iter()
+            .flat_map(Block::normal_transactions)
+            .map(Transaction::id)
+            .collect()
     }
 
     fn replace_with_better_chain(&mut self, candidate: Blockchain) -> Result<bool, String> {
@@ -1641,6 +1667,13 @@ fn add_transaction_to_mempool(
     let blockchain = blockchain
         .lock()
         .map_err(|_| "blockchain lock was poisoned".to_string())?;
+    if blockchain
+        .confirmed_transaction_ids()
+        .contains(&transaction_id)
+    {
+        return Err("transaction has already been confirmed".to_string());
+    }
+
     let mut balances = WalletBalances::from_chain(&blockchain.chain);
     for pending in mempool.iter() {
         balances.apply_signed_transaction(pending)?;
@@ -1914,6 +1947,48 @@ mod tests {
 
         let overspend = Transaction::new("miner", "receiver", 11.0, &miner_key);
         let result = blockchain.add_block(vec![overspend], miner_public_key);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn chain_rejects_replayed_transactions() {
+        let miner_key = SigningKey::from_bytes(&[7; 32]);
+        let miner_public_key = bytes_to_hex(miner_key.verifying_key().as_bytes());
+        let mut blockchain = Blockchain::new();
+
+        blockchain
+            .add_block(vec![], miner_public_key.clone())
+            .expect("coinbase-only block should mine");
+
+        let transaction = Transaction::new("miner", "receiver", 1.0, &miner_key);
+        blockchain
+            .add_block(vec![transaction.clone()], miner_public_key.clone())
+            .expect("first transaction should be accepted");
+
+        let result = blockchain.add_block(vec![transaction], miner_public_key);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn mempool_rejects_confirmed_transactions() {
+        let miner_key = SigningKey::from_bytes(&[7; 32]);
+        let miner_public_key = bytes_to_hex(miner_key.verifying_key().as_bytes());
+        let mut blockchain = Blockchain::new();
+
+        blockchain
+            .add_block(vec![], miner_public_key.clone())
+            .expect("coinbase-only block should mine");
+
+        let transaction = Transaction::new("miner", "receiver", 1.0, &miner_key);
+        blockchain
+            .add_block(vec![transaction.clone()], miner_public_key)
+            .expect("first transaction should be accepted");
+
+        let blockchain = Arc::new(Mutex::new(blockchain));
+        let mempool = Arc::new(Mutex::new(Vec::new()));
+        let result = add_transaction_to_mempool(&blockchain, &mempool, transaction);
 
         assert!(result.is_err());
     }
