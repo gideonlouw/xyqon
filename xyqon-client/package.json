@@ -1,0 +1,47 @@
+{
+  "name": "xyqon",
+  "version": "0.1.0",
+  "description": "Friendly wallet CLI and JavaScript client for the XYQON network.",
+  "keywords": [
+    "xyqon",
+    "wallet",
+    "blockchain",
+    "ed25519",
+    "cli"
+  ],
+  "homepage": "https://github.com/gideonlouw/xyqon#readme",
+  "bugs": {
+    "url": "https://github.com/gideonlouw/xyqon/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gideonlouw/xyqon.git"
+  },
+  "license": "MIT",
+  "author": "xyqon",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "main": "index.js",
+  "bin": {
+    "xyqon": "src/cli.js",
+    "xyqon-client": "src/cli.js"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "start": "node src/cli.js",
+    "check": "node src/cli.js help && node src/cli.js nodes"
+  },
+  "dependencies": {
+    "@noble/curves": "^1.8.2"
+  },
+  "devDependencies": {},
+  "engines": {
+    "node": ">=20"
+  }
+}

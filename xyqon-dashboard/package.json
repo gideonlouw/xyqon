@@ -1,7 +1,23 @@
 {
-  "name": "xyqon-dashboard",
+  "name": "xyqon",
   "version": "1.0.0",
   "private": true,
+  "description": "xyqon",
+  "keywords": [
+    "xyqon"
+  ],
+  "homepage": "https://github.com/gideonlouw/xyqon#readme",
+  "bugs": {
+    "url": "https://github.com/gideonlouw/xyqon/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gideonlouw/xyqon.git"
+  },
+  "license": "ISC",
+  "author": "xyqon",
+  "type": "commonjs",
+  "main": "index.js",
   "scripts": {
     "start": "node tools/dev.mjs",
     "start:api": "node server/xyqon-api.mjs",
