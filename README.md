@@ -47,6 +47,7 @@ The app has these command groups:
 
 - `node`: run a blockchain node
 - `submit`: sign and broadcast a transaction without mining
+- `coin`: create a basic coin on top of XYQON
 - `mine`: run a miner that competes for block rewards
 - `wallet`: create or inspect wallet keys
 
@@ -168,6 +169,34 @@ xyqon submit \
 ```
 
 The transaction enters the mempool of reachable peers. A miner must then include it in a block.
+
+## Create A Coin
+
+Use `coin create` to define a basic fixed-supply coin on top of the XYQON network. Coin creation is a signed `0 XYQON` transaction, so the creator does not need to spend XYQON to submit it. When a miner includes the transaction in a block, the creator receives the full initial supply and the miner receives the normal XYQON block reward.
+
+```bash
+xyqon coin create \
+  --peers-file /etc/xyqon/peers.txt \
+  --wallet creator.wallet.json \
+  --symbol GAME \
+  --name "Game Coin" \
+  --supply 1000000 \
+  --chain /var/lib/xyqon/xyqon-chain.json
+```
+
+Coin symbols are unique across the chain and may contain 2 to 12 letters or numbers. The initial supply is fixed forever; there is no later mint transaction.
+
+Use `coin send` to transfer that token between wallets. Token transfers are also signed `0 XYQON` transactions, and miners earn the normal XYQON block reward for including them.
+
+```bash
+xyqon coin send \
+  --peers-file /etc/xyqon/peers.txt \
+  --wallet creator.wallet.json \
+  --symbol GAME \
+  --to RECIPIENT_PUBLIC_KEY \
+  --amount 25 \
+  --chain /var/lib/xyqon/xyqon-chain.json
+```
 
 ## Run A Miner
 

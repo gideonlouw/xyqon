@@ -1,3 +1,6 @@
+mod assets;
+
+use assets::{AssetLedger, AssetOperation};
 use chrono::prelude::*;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand_core::OsRng;
@@ -34,12 +37,14 @@ struct Transaction {
     amount: f64,
     sender_public_key: String,
     signature: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    asset_operation: Option<AssetOperation>,
 }
 
 impl Transaction {
     fn new(sender: &str, recipient: &str, amount: f64, signing_key: &SigningKey) -> Self {
         let sender_public_key = bytes_to_hex(signing_key.verifying_key().as_bytes());
-        let payload = Transaction::payload(sender, recipient, amount, &sender_public_key);
+        let payload = Transaction::payload(sender, recipient, amount, &sender_public_key, None);
         let signature = signing_key.sign(payload.as_bytes());
 
         Transaction {
@@ -48,6 +53,7 @@ impl Transaction {
             amount,
             sender_public_key,
             signature: bytes_to_hex(&signature.to_bytes()),
+            asset_operation: None,
         }
     }
 
@@ -58,6 +64,7 @@ impl Transaction {
             amount,
             sender_public_key: String::new(),
             signature: String::new(),
+            asset_operation: None,
         }
     }
 
@@ -65,8 +72,72 @@ impl Transaction {
         Transaction::system("network", recipient, amount)
     }
 
+    fn create_coin(
+        sender: &str,
+        symbol: String,
+        name: String,
+        supply: f64,
+        signing_key: &SigningKey,
+    ) -> Result<Self, String> {
+        let sender_public_key = bytes_to_hex(signing_key.verifying_key().as_bytes());
+        let asset_operation = AssetOperation::create_coin(symbol, name, supply)?;
+        let payload = Transaction::payload(
+            sender,
+            &sender_public_key,
+            0.0,
+            &sender_public_key,
+            Some(&asset_operation),
+        );
+        let signature = signing_key.sign(payload.as_bytes());
+
+        Ok(Transaction {
+            sender: sender.to_string(),
+            recipient: sender_public_key.clone(),
+            amount: 0.0,
+            sender_public_key,
+            signature: bytes_to_hex(&signature.to_bytes()),
+            asset_operation: Some(asset_operation),
+        })
+    }
+
+    fn transfer_coin(
+        sender: &str,
+        recipient: String,
+        symbol: String,
+        amount: f64,
+        signing_key: &SigningKey,
+    ) -> Result<Self, String> {
+        let sender_public_key = bytes_to_hex(signing_key.verifying_key().as_bytes());
+        let asset_operation = AssetOperation::transfer_coin(symbol, amount)?;
+        let payload = Transaction::payload(
+            sender,
+            &recipient,
+            0.0,
+            &sender_public_key,
+            Some(&asset_operation),
+        );
+        let signature = signing_key.sign(payload.as_bytes());
+
+        Ok(Transaction {
+            sender: sender.to_string(),
+            recipient,
+            amount: 0.0,
+            sender_public_key,
+            signature: bytes_to_hex(&signature.to_bytes()),
+            asset_operation: Some(asset_operation),
+        })
+    }
+
     fn is_valid_signed_transaction(&self) -> bool {
         if self.sender == "network" {
+            return false;
+        }
+
+        if let Some(operation) = self.asset_operation.as_ref() {
+            if operation.requires_zero_xyqon_amount() && !amounts_equal(self.amount, 0.0) {
+                return false;
+            }
+        } else if self.amount <= 0.0 {
             return false;
         }
 
@@ -87,6 +158,7 @@ impl Transaction {
             &self.recipient,
             self.amount,
             &self.sender_public_key,
+            self.asset_operation.as_ref(),
         );
 
         public_key.verify(payload.as_bytes(), &signature).is_ok()
@@ -108,8 +180,22 @@ impl Transaction {
             && self.signature.is_empty()
     }
 
-    fn payload(sender: &str, recipient: &str, amount: f64, sender_public_key: &str) -> String {
-        format!("{sender}|{recipient}|{amount:.8}|{sender_public_key}")
+    fn payload(
+        sender: &str,
+        recipient: &str,
+        amount: f64,
+        sender_public_key: &str,
+        asset_operation: Option<&AssetOperation>,
+    ) -> String {
+        let base = format!("{sender}|{recipient}|{amount:.8}|{sender_public_key}");
+        match asset_operation {
+            Some(operation) => {
+                let operation = serde_json::to_string(operation)
+                    .expect("asset operation should serialize for signing");
+                format!("{base}|{operation}")
+            }
+            None => base,
+        }
     }
 
     fn id(&self) -> String {
@@ -300,6 +386,13 @@ impl WalletBalances {
     }
 
     fn apply_signed_transaction(&mut self, transaction: &Transaction) -> Result<(), String> {
+        if transaction.asset_operation.is_some() {
+            if !amounts_equal(transaction.amount, 0.0) {
+                return Err("asset transactions must use a 0 XYQON amount".to_string());
+            }
+            return Ok(());
+        }
+
         if transaction.amount <= 0.0 {
             return Err("transaction amount must be positive".to_string());
         }
@@ -443,6 +536,7 @@ impl Blockchain {
     fn is_valid(&self) -> bool {
         let mut total_supply = 0.0;
         let mut balances = WalletBalances::new();
+        let mut assets = AssetLedger::new();
         let mut confirmed_transaction_ids = HashSet::new();
 
         for i in 1..self.chain.len() {
@@ -470,6 +564,10 @@ impl Blockchain {
             }
 
             if !balances.apply_block(current) {
+                return false;
+            }
+
+            if assets.apply_block(current).is_err() {
                 return false;
             }
 
@@ -504,6 +602,7 @@ impl Blockchain {
 
     fn validate_spending(&self, transactions: &[Transaction]) -> Result<(), String> {
         let mut balances = WalletBalances::from_chain(&self.chain);
+        let mut assets = AssetLedger::from_chain(&self.chain)?;
         let mut seen_transaction_ids = self.confirmed_transaction_ids();
         for transaction in transactions {
             let transaction_id = transaction.id();
@@ -513,6 +612,7 @@ impl Blockchain {
                 ));
             }
             balances.apply_signed_transaction(transaction)?;
+            assets.apply_transaction(transaction)?;
         }
 
         Ok(())
@@ -957,6 +1057,8 @@ fn handle_peer_stream(
 enum Command {
     Node(NodeConfig),
     Submit(SubmitConfig),
+    CoinCreate(CoinCreateConfig),
+    CoinTransfer(CoinTransferConfig),
     Mine(MineConfig),
     WalletNew(WalletNewConfig),
     WalletExport(WalletExportConfig),
@@ -981,6 +1083,30 @@ struct SubmitConfig {
     wallet_path: String,
     chain_path: String,
     mempool_path: String,
+    recipient: String,
+    amount: f64,
+}
+
+#[derive(Debug)]
+struct CoinCreateConfig {
+    peers: Vec<String>,
+    peers_file: Option<String>,
+    wallet_path: String,
+    chain_path: String,
+    mempool_path: String,
+    symbol: String,
+    name: String,
+    supply: f64,
+}
+
+#[derive(Debug)]
+struct CoinTransferConfig {
+    peers: Vec<String>,
+    peers_file: Option<String>,
+    wallet_path: String,
+    chain_path: String,
+    mempool_path: String,
+    symbol: String,
     recipient: String,
     amount: f64,
 }
@@ -1027,6 +1153,7 @@ impl Command {
         match command.as_str() {
             "node" => NodeConfig::from_args(args).map(Command::Node),
             "submit" => SubmitConfig::from_args(args).map(Command::Submit),
+            "coin" => parse_coin_command(args),
             "mine" => MineConfig::from_args(args).map(Command::Mine),
             "wallet" => parse_wallet_command(args),
             "help" | "--help" | "-h" => Ok(Command::Help),
@@ -1158,6 +1285,163 @@ impl SubmitConfig {
             mempool_path,
             recipient: recipient.ok_or_else(|| "submit requires --to <RECIPIENT>".to_string())?,
             amount: amount.ok_or_else(|| "submit requires --amount <AMOUNT>".to_string())?,
+        })
+    }
+}
+
+impl CoinCreateConfig {
+    fn from_args(args: Vec<String>) -> Result<Self, String> {
+        let mut peers = Vec::new();
+        let mut peers_file = None;
+        let mut wallet_path = None;
+        let mut chain_path = "xyqon-chain.json".to_string();
+        let mut mempool_path = None;
+        let mut symbol = None;
+        let mut name = None;
+        let mut supply = None;
+        let mut args = args.into_iter();
+
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--peer" => {
+                    if let Some(peer) = args.next() {
+                        peers.push(peer);
+                    }
+                }
+                "--peers-file" => {
+                    peers_file = Some(
+                        args.next()
+                            .ok_or_else(|| "--peers-file requires a file path".to_string())?,
+                    );
+                }
+                "--wallet" => wallet_path = args.next(),
+                "--chain" => {
+                    chain_path = args
+                        .next()
+                        .ok_or_else(|| "--chain requires a file path".to_string())?;
+                }
+                "--mempool" => {
+                    mempool_path = Some(
+                        args.next()
+                            .ok_or_else(|| "--mempool requires a file path".to_string())?,
+                    );
+                }
+                "--symbol" => {
+                    symbol = Some(
+                        args.next()
+                            .ok_or_else(|| "--symbol requires a coin symbol".to_string())?,
+                    );
+                }
+                "--name" => {
+                    name = Some(
+                        args.next()
+                            .ok_or_else(|| "--name requires a coin name".to_string())?,
+                    );
+                }
+                "--supply" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| "--supply requires a number".to_string())?;
+                    supply = Some(
+                        value
+                            .parse::<f64>()
+                            .map_err(|_| format!("invalid supply: {value}"))?,
+                    );
+                }
+                _ => return Err(format!("unknown coin create option: {arg}")),
+            }
+        }
+
+        let mempool_path = mempool_path.unwrap_or_else(|| default_mempool_path(&chain_path));
+        Ok(CoinCreateConfig {
+            peers,
+            peers_file,
+            wallet_path: wallet_path
+                .ok_or_else(|| "coin create requires --wallet <FILE>".to_string())?,
+            chain_path,
+            mempool_path,
+            symbol: symbol.ok_or_else(|| "coin create requires --symbol <SYMBOL>".to_string())?,
+            name: name.ok_or_else(|| "coin create requires --name <NAME>".to_string())?,
+            supply: supply.ok_or_else(|| "coin create requires --supply <AMOUNT>".to_string())?,
+        })
+    }
+}
+
+impl CoinTransferConfig {
+    fn from_args(args: Vec<String>) -> Result<Self, String> {
+        let mut peers = Vec::new();
+        let mut peers_file = None;
+        let mut wallet_path = None;
+        let mut chain_path = "xyqon-chain.json".to_string();
+        let mut mempool_path = None;
+        let mut symbol = None;
+        let mut recipient = None;
+        let mut amount = None;
+        let mut args = args.into_iter();
+
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--peer" => {
+                    if let Some(peer) = args.next() {
+                        peers.push(peer);
+                    }
+                }
+                "--peers-file" => {
+                    peers_file = Some(
+                        args.next()
+                            .ok_or_else(|| "--peers-file requires a file path".to_string())?,
+                    );
+                }
+                "--wallet" => wallet_path = args.next(),
+                "--chain" => {
+                    chain_path = args
+                        .next()
+                        .ok_or_else(|| "--chain requires a file path".to_string())?;
+                }
+                "--mempool" => {
+                    mempool_path = Some(
+                        args.next()
+                            .ok_or_else(|| "--mempool requires a file path".to_string())?,
+                    );
+                }
+                "--symbol" => {
+                    symbol = Some(
+                        args.next()
+                            .ok_or_else(|| "--symbol requires a coin symbol".to_string())?,
+                    );
+                }
+                "--to" => {
+                    recipient = Some(
+                        args.next()
+                            .ok_or_else(|| "--to requires a recipient".to_string())?,
+                    );
+                }
+                "--amount" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| "--amount requires a number".to_string())?;
+                    amount = Some(
+                        value
+                            .parse::<f64>()
+                            .map_err(|_| format!("invalid amount: {value}"))?,
+                    );
+                }
+                _ => return Err(format!("unknown coin send option: {arg}")),
+            }
+        }
+
+        let mempool_path = mempool_path.unwrap_or_else(|| default_mempool_path(&chain_path));
+        Ok(CoinTransferConfig {
+            peers,
+            peers_file,
+            wallet_path: wallet_path
+                .ok_or_else(|| "coin send requires --wallet <FILE>".to_string())?,
+            chain_path,
+            mempool_path,
+            symbol: symbol.ok_or_else(|| "coin send requires --symbol <SYMBOL>".to_string())?,
+            recipient: recipient
+                .ok_or_else(|| "coin send requires --to <RECIPIENT>".to_string())?,
+            amount: amount.ok_or_else(|| "coin send requires --amount <AMOUNT>".to_string())?,
         })
     }
 }
@@ -1313,6 +1597,19 @@ fn parse_wallet_command(mut args: Vec<String>) -> Result<Command, String> {
     }
 }
 
+fn parse_coin_command(mut args: Vec<String>) -> Result<Command, String> {
+    if args.is_empty() {
+        return Ok(Command::Help);
+    }
+
+    let command = args.remove(0);
+    match command.as_str() {
+        "create" => CoinCreateConfig::from_args(args).map(Command::CoinCreate),
+        "send" => CoinTransferConfig::from_args(args).map(Command::CoinTransfer),
+        _ => Err(format!("unknown coin command: {command}")),
+    }
+}
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("{error}");
@@ -1325,6 +1622,8 @@ fn run() -> Result<(), String> {
     match Command::from_args()? {
         Command::Node(config) => run_node(config),
         Command::Submit(config) => submit_transaction(config),
+        Command::CoinCreate(config) => create_coin(config),
+        Command::CoinTransfer(config) => transfer_coin(config),
         Command::Mine(config) => run_miner(config),
         Command::WalletNew(config) => create_wallet(config),
         Command::WalletExport(config) => export_wallet(config),
@@ -1382,6 +1681,69 @@ fn submit_transaction(config: SubmitConfig) -> Result<(), String> {
     println!(
         "Submitted transaction from {} to {} for {} XYQON",
         wallet.public_key, config.recipient, config.amount
+    );
+    Ok(())
+}
+
+fn create_coin(config: CoinCreateConfig) -> Result<(), String> {
+    let wallet = WalletFile::load(&config.wallet_path)?;
+    let signing_key = wallet.signing_key()?;
+    let node = Node::new(NodeConfig {
+        listen_addr: None,
+        peers: config.peers,
+        peers_file: config.peers_file,
+        chain_path: config.chain_path,
+        mempool_path: config.mempool_path,
+        advertised_addr: None,
+    })?;
+
+    let transaction = Transaction::create_coin(
+        &wallet.name,
+        config.symbol.clone(),
+        config.name.clone(),
+        config.supply,
+        &signing_key,
+    )?;
+    node.sync_chain_from_peers();
+    node.submit_transaction(transaction)?;
+    println!(
+        "Submitted 0 XYQON coin creation for {} ({}) from {}. The creator receives {} {} when it is mined.",
+        config.name,
+        config.symbol.to_ascii_uppercase(),
+        wallet.public_key,
+        config.supply,
+        config.symbol.to_ascii_uppercase()
+    );
+    Ok(())
+}
+
+fn transfer_coin(config: CoinTransferConfig) -> Result<(), String> {
+    let wallet = WalletFile::load(&config.wallet_path)?;
+    let signing_key = wallet.signing_key()?;
+    let node = Node::new(NodeConfig {
+        listen_addr: None,
+        peers: config.peers,
+        peers_file: config.peers_file,
+        chain_path: config.chain_path,
+        mempool_path: config.mempool_path,
+        advertised_addr: None,
+    })?;
+
+    let transaction = Transaction::transfer_coin(
+        &wallet.name,
+        config.recipient.clone(),
+        config.symbol.clone(),
+        config.amount,
+        &signing_key,
+    )?;
+    node.sync_chain_from_peers();
+    node.submit_transaction(transaction)?;
+    println!(
+        "Submitted 0 XYQON transfer of {} {} from {} to {}",
+        config.amount,
+        config.symbol.to_ascii_uppercase(),
+        wallet.public_key,
+        config.recipient
     );
     Ok(())
 }
@@ -1648,10 +2010,13 @@ fn add_transaction_to_mempool(
     }
 
     let mut balances = WalletBalances::from_chain(&blockchain.chain);
+    let mut assets = AssetLedger::from_chain(&blockchain.chain)?;
     for pending in mempool.iter() {
         balances.apply_signed_transaction(pending)?;
+        assets.apply_transaction(pending)?;
     }
     balances.apply_signed_transaction(&transaction)?;
+    assets.apply_transaction(&transaction)?;
     drop(blockchain);
 
     mempool.push(transaction);
@@ -1801,6 +2166,8 @@ fn print_help() {
 USAGE:
   xyqon node [OPTIONS]
   xyqon submit --wallet <FILE> --to <RECIPIENT> --amount <AMOUNT> [NETWORK OPTIONS]
+  xyqon coin create --wallet <FILE> --symbol <SYMBOL> --name <NAME> --supply <AMOUNT> [NETWORK OPTIONS]
+  xyqon coin send --wallet <FILE> --symbol <SYMBOL> --to <RECIPIENT> --amount <AMOUNT> [NETWORK OPTIONS]
   xyqon mine --wallet <FILE> [NETWORK OPTIONS]
   xyqon wallet new --name <NAME> --out <FILE>
   xyqon wallet export --wallet <FILE> [--show-private]
@@ -1819,6 +2186,20 @@ SUBMIT OPTIONS:
   --to <RECIPIENT>      Recipient public key
   --amount <AMOUNT>     Amount to transfer
   --peer <ADDR>         Peer to broadcast the transaction to. Can be repeated
+  --peers-file <FILE>   Load peers from a newline-separated file
+  --chain <FILE>        Existing live chain file. Defaults to xyqon-chain.json
+  --mempool <FILE>      Persistent mempool file. Defaults to <chain>.mempool.json
+
+COIN OPTIONS:
+  coin create           Submit a free 0 XYQON transaction that defines a fixed-supply coin
+  coin send             Submit a free 0 XYQON token transfer
+  --wallet <FILE>       Wallet that signs the coin transaction
+  --symbol <SYMBOL>     Unique coin symbol, 2 to 12 letters or numbers
+  --name <NAME>         Coin display name, 1 to 64 characters
+  --supply <AMOUNT>     Fixed coin supply minted once to the creator
+  --to <RECIPIENT>      Recipient public key for coin send
+  --amount <AMOUNT>     Coin amount for coin send
+  --peer <ADDR>         Peer to broadcast the coin transaction to. Can be repeated
   --peers-file <FILE>   Load peers from a newline-separated file
   --chain <FILE>        Existing live chain file. Defaults to xyqon-chain.json
   --mempool <FILE>      Persistent mempool file. Defaults to <chain>.mempool.json
@@ -1850,6 +2231,12 @@ WALLET COMMANDS:
   wallet new            Create a new Ed25519 wallet file
   wallet export         Print wallet public key, and optionally private key
   wallet balance        Calculate wallet balance from the saved chain
+
+BUILDING ON XYQON:
+  Coin creation and coin sends are signed 0 XYQON transactions.
+  The creator chooses the fixed supply when the coin is created.
+  No later transaction can mint more units of that coin.
+  Miners receive the normal XYQON block reward for including these transactions in a block.
 "#
     );
 }
@@ -1979,6 +2366,155 @@ mod tests {
         let blockchain = Arc::new(Mutex::new(blockchain));
         let mempool = Arc::new(Mutex::new(Vec::new()));
         let result = add_transaction_to_mempool(&blockchain, &mempool, transaction);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn coin_creation_uses_zero_xyqon_and_mints_initial_coin_supply() {
+        let creator_key = SigningKey::from_bytes(&[9; 32]);
+        let creator_public_key = bytes_to_hex(creator_key.verifying_key().as_bytes());
+        let miner_key = SigningKey::from_bytes(&[8; 32]);
+        let miner_public_key = bytes_to_hex(miner_key.verifying_key().as_bytes());
+        let mut blockchain = blockchain_with_genesis();
+
+        let create_coin = Transaction::create_coin(
+            "creator",
+            "GAME".to_string(),
+            "Game Coin".to_string(),
+            1_000.0,
+            &creator_key,
+        )
+        .expect("coin creation transaction should build");
+
+        assert!(create_coin.is_valid_signed_transaction());
+        assert!(amounts_equal(create_coin.amount, 0.0));
+
+        blockchain
+            .add_block(vec![create_coin], miner_public_key)
+            .expect("coin creation should be accepted");
+
+        let ledger = AssetLedger::from_chain(&blockchain.chain).expect("asset ledger should build");
+        assert!(ledger.coin_exists("GAME"));
+        assert!(amounts_equal(
+            ledger.coin_balance("GAME", &creator_public_key),
+            1_000.0
+        ));
+    }
+
+    #[test]
+    fn chain_rejects_duplicate_coin_symbols() {
+        let creator_key = SigningKey::from_bytes(&[9; 32]);
+        let miner_key = SigningKey::from_bytes(&[8; 32]);
+        let miner_public_key = bytes_to_hex(miner_key.verifying_key().as_bytes());
+        let mut blockchain = blockchain_with_genesis();
+
+        let first = Transaction::create_coin(
+            "creator",
+            "GAME".to_string(),
+            "Game Coin".to_string(),
+            1_000.0,
+            &creator_key,
+        )
+        .expect("first coin creation transaction should build");
+        let duplicate = Transaction::create_coin(
+            "creator",
+            "game".to_string(),
+            "Another Game Coin".to_string(),
+            500.0,
+            &creator_key,
+        )
+        .expect("duplicate coin creation transaction should build");
+
+        blockchain
+            .add_block(vec![first], miner_public_key.clone())
+            .expect("first coin creation should be accepted");
+
+        let result = blockchain.add_block(vec![duplicate], miner_public_key);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn coin_transfer_moves_existing_supply_without_spending_xyqon() {
+        let creator_key = SigningKey::from_bytes(&[9; 32]);
+        let creator_public_key = bytes_to_hex(creator_key.verifying_key().as_bytes());
+        let recipient_key = SigningKey::from_bytes(&[10; 32]);
+        let recipient_public_key = bytes_to_hex(recipient_key.verifying_key().as_bytes());
+        let miner_key = SigningKey::from_bytes(&[8; 32]);
+        let miner_public_key = bytes_to_hex(miner_key.verifying_key().as_bytes());
+        let mut blockchain = blockchain_with_genesis();
+
+        let create_coin = Transaction::create_coin(
+            "creator",
+            "GAME".to_string(),
+            "Game Coin".to_string(),
+            1_000.0,
+            &creator_key,
+        )
+        .expect("coin creation transaction should build");
+        blockchain
+            .add_block(vec![create_coin], miner_public_key.clone())
+            .expect("coin creation should be accepted");
+
+        let send_coin = Transaction::transfer_coin(
+            "creator",
+            recipient_public_key.clone(),
+            "GAME".to_string(),
+            25.0,
+            &creator_key,
+        )
+        .expect("coin transfer transaction should build");
+
+        assert!(send_coin.is_valid_signed_transaction());
+        assert!(amounts_equal(send_coin.amount, 0.0));
+
+        blockchain
+            .add_block(vec![send_coin], miner_public_key)
+            .expect("coin transfer should be accepted");
+
+        let ledger = AssetLedger::from_chain(&blockchain.chain).expect("asset ledger should build");
+        assert!(amounts_equal(
+            ledger.coin_balance("GAME", &creator_public_key),
+            975.0
+        ));
+        assert!(amounts_equal(
+            ledger.coin_balance("GAME", &recipient_public_key),
+            25.0
+        ));
+    }
+
+    #[test]
+    fn chain_rejects_coin_transfer_overspend() {
+        let creator_key = SigningKey::from_bytes(&[9; 32]);
+        let recipient_key = SigningKey::from_bytes(&[10; 32]);
+        let recipient_public_key = bytes_to_hex(recipient_key.verifying_key().as_bytes());
+        let miner_key = SigningKey::from_bytes(&[8; 32]);
+        let miner_public_key = bytes_to_hex(miner_key.verifying_key().as_bytes());
+        let mut blockchain = blockchain_with_genesis();
+
+        let create_coin = Transaction::create_coin(
+            "creator",
+            "GAME".to_string(),
+            "Game Coin".to_string(),
+            10.0,
+            &creator_key,
+        )
+        .expect("coin creation transaction should build");
+        blockchain
+            .add_block(vec![create_coin], miner_public_key.clone())
+            .expect("coin creation should be accepted");
+
+        let overspend = Transaction::transfer_coin(
+            "creator",
+            recipient_public_key,
+            "GAME".to_string(),
+            11.0,
+            &creator_key,
+        )
+        .expect("coin transfer transaction should build");
+
+        let result = blockchain.add_block(vec![overspend], miner_public_key);
 
         assert!(result.is_err());
     }
