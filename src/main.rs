@@ -178,16 +178,6 @@ impl Block {
         transactions: Vec<Transaction>,
         previous_hash: String,
     ) -> Self {
-        Block::new_with_timestamp(index, timestamp, difficulty, transactions, previous_hash)
-    }
-
-    fn new_with_timestamp(
-        index: u64,
-        timestamp: i64,
-        difficulty: usize,
-        transactions: Vec<Transaction>,
-        previous_hash: String,
-    ) -> Self {
         let mut block = Block {
             index,
             timestamp,
@@ -347,18 +337,11 @@ struct Blockchain {
 }
 
 impl Blockchain {
-    fn new() -> Self {
-        let mut blockchain = Blockchain {
-            chain: vec![],
-            circulating_supply: 0.0,
-        };
-        blockchain.chain.push(Blockchain::genesis_block());
-        blockchain
-    }
-
-    fn load_or_new(path: &str) -> Result<Self, String> {
+    fn load(path: &str) -> Result<Self, String> {
         if !Path::new(path).exists() {
-            return Ok(Blockchain::new());
+            return Err(format!(
+                "chain file does not exist: {path}; start with a synced live chain file"
+            ));
         }
 
         let contents =
@@ -372,16 +355,6 @@ impl Blockchain {
         }
 
         Ok(blockchain)
-    }
-
-    fn genesis_block() -> Block {
-        Block::new_with_timestamp(
-            0,
-            GENESIS_TIMESTAMP,
-            INITIAL_DIFFICULTY,
-            vec![Transaction::system("network", "genesis", 0.0)],
-            "0".to_string(),
-        )
     }
 
     fn latest_block(&self) -> &Block {
@@ -703,7 +676,7 @@ impl Node {
         )?;
 
         Ok(Node {
-            blockchain: Arc::new(Mutex::new(Blockchain::load_or_new(&config.chain_path)?)),
+            blockchain: Arc::new(Mutex::new(Blockchain::load(&config.chain_path)?)),
             mempool: Arc::new(Mutex::new(load_mempool(&config.mempool_path)?)),
             peers,
             chain_path: config.chain_path,
@@ -1483,7 +1456,7 @@ fn export_wallet(config: WalletExportConfig) -> Result<(), String> {
 
 fn show_wallet_balance(config: WalletBalanceConfig) -> Result<(), String> {
     let wallet = WalletFile::load(&config.wallet_path)?;
-    let blockchain = Blockchain::load_or_new(&config.chain_path)?;
+    let blockchain = Blockchain::load(&config.chain_path)?;
     let balance = blockchain.wallet_balance(&wallet);
 
     println!("Wallet: {}", wallet.name);
@@ -1838,7 +1811,7 @@ NODE OPTIONS:
   --peer <ADDR>         Add a peer to share accepted blocks with. Can be repeated
   --peers-file <FILE>   Load peers from a newline-separated file and save discovered peers back to it
   --advertise <ADDR>    Public address this node announces to peers, for example 68.183.98.134:7101
-  --chain <FILE>        Chain storage file. Defaults to xyqon-chain.json
+  --chain <FILE>        Existing live chain file. Defaults to xyqon-chain.json
   --mempool <FILE>      Persistent mempool file. Defaults to <chain>.mempool.json
 
 SUBMIT OPTIONS:
@@ -1847,7 +1820,7 @@ SUBMIT OPTIONS:
   --amount <AMOUNT>     Amount to transfer
   --peer <ADDR>         Peer to broadcast the transaction to. Can be repeated
   --peers-file <FILE>   Load peers from a newline-separated file
-  --chain <FILE>        Chain storage file. Defaults to xyqon-chain.json
+  --chain <FILE>        Existing live chain file. Defaults to xyqon-chain.json
   --mempool <FILE>      Persistent mempool file. Defaults to <chain>.mempool.json
 
 MINE OPTIONS:
@@ -1856,7 +1829,7 @@ MINE OPTIONS:
   --peer <ADDR>         Peer to sync and broadcast with. Can be repeated
   --peers-file <FILE>   Load peers from a newline-separated file
   --advertise <ADDR>    Public address this miner announces to peers
-  --chain <FILE>        Chain storage file. Defaults to xyqon-chain.json
+  --chain <FILE>        Existing live chain file. Defaults to xyqon-chain.json
   --mempool <FILE>      Persistent mempool file. Defaults to <chain>.mempool.json
   --interval <SECONDS>  Delay between mining attempts. Defaults to 1
   --mine-empty          Allow mining coinbase-only blocks when there are no pending transactions
@@ -1885,6 +1858,23 @@ WALLET COMMANDS:
 mod tests {
     use super::*;
 
+    fn genesis_block() -> Block {
+        Block::new(
+            0,
+            GENESIS_TIMESTAMP,
+            INITIAL_DIFFICULTY,
+            vec![Transaction::system("network", "genesis", 0.0)],
+            "0".to_string(),
+        )
+    }
+
+    fn blockchain_with_genesis() -> Blockchain {
+        Blockchain {
+            chain: vec![genesis_block()],
+            circulating_supply: 0.0,
+        }
+    }
+
     #[test]
     fn mining_reward_halves_every_100_000_blocks() {
         assert_eq!(mining_reward_for_block(0), 0.0);
@@ -1897,7 +1887,7 @@ mod tests {
 
     #[test]
     fn difficulty_adjusts_toward_30_second_blocks() {
-        let mut previous = Blockchain::genesis_block();
+        let mut previous = genesis_block();
         assert_eq!(
             expected_difficulty_for_next_block(&[previous.clone()], previous.timestamp + 5),
             INITIAL_DIFFICULTY
@@ -1939,7 +1929,7 @@ mod tests {
     fn chain_rejects_overspending_transactions() {
         let miner_key = SigningKey::from_bytes(&[7; 32]);
         let miner_public_key = bytes_to_hex(miner_key.verifying_key().as_bytes());
-        let mut blockchain = Blockchain::new();
+        let mut blockchain = blockchain_with_genesis();
 
         blockchain
             .add_block(vec![], miner_public_key.clone())
@@ -1955,7 +1945,7 @@ mod tests {
     fn chain_rejects_replayed_transactions() {
         let miner_key = SigningKey::from_bytes(&[7; 32]);
         let miner_public_key = bytes_to_hex(miner_key.verifying_key().as_bytes());
-        let mut blockchain = Blockchain::new();
+        let mut blockchain = blockchain_with_genesis();
 
         blockchain
             .add_block(vec![], miner_public_key.clone())
@@ -1975,7 +1965,7 @@ mod tests {
     fn mempool_rejects_confirmed_transactions() {
         let miner_key = SigningKey::from_bytes(&[7; 32]);
         let miner_public_key = bytes_to_hex(miner_key.verifying_key().as_bytes());
-        let mut blockchain = Blockchain::new();
+        let mut blockchain = blockchain_with_genesis();
 
         blockchain
             .add_block(vec![], miner_public_key.clone())
@@ -1997,8 +1987,8 @@ mod tests {
     fn chain_replaces_itself_with_better_valid_chain() {
         let miner_key = SigningKey::from_bytes(&[8; 32]);
         let miner_public_key = bytes_to_hex(miner_key.verifying_key().as_bytes());
-        let mut local = Blockchain::new();
-        let mut candidate = Blockchain::new();
+        let mut local = blockchain_with_genesis();
+        let mut candidate = blockchain_with_genesis();
 
         candidate
             .add_block(vec![], miner_public_key)
