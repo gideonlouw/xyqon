@@ -23,6 +23,7 @@ const LEGACY_TARGET_BLOCK_TIME_SECONDS: i64 = 30;
 const DIFFICULTY_WINDOW_BLOCKS: usize = 10;
 const ROLLING_DIFFICULTY_START_BLOCK: u64 = 6;
 const REPLAY_PROTECTION_START_BLOCK: u64 = 10;
+#[cfg(test)]
 const GENESIS_TIMESTAMP: i64 = 1_700_000_000;
 const INITIAL_MINING_REWARD: f64 = 10.0;
 const HALVING_INTERVAL: u64 = 100_000;
@@ -109,6 +110,63 @@ impl Transaction {
     ) -> Result<Self, String> {
         let sender_public_key = bytes_to_hex(signing_key.verifying_key().as_bytes());
         let asset_operation = AssetOperation::transfer_coin(symbol, amount)?;
+        let payload = Transaction::payload(
+            sender,
+            &recipient,
+            0.0,
+            &sender_public_key,
+            Some(&asset_operation),
+        );
+        let signature = signing_key.sign(payload.as_bytes());
+
+        Ok(Transaction {
+            sender: sender.to_string(),
+            recipient,
+            amount: 0.0,
+            sender_public_key,
+            signature: bytes_to_hex(&signature.to_bytes()),
+            asset_operation: Some(asset_operation),
+        })
+    }
+
+    fn mint_nft(
+        sender: &str,
+        collection: String,
+        token_id: String,
+        name: String,
+        image_url: Option<String>,
+        signing_key: &SigningKey,
+    ) -> Result<Self, String> {
+        let sender_public_key = bytes_to_hex(signing_key.verifying_key().as_bytes());
+        let asset_operation = AssetOperation::mint_nft(collection, token_id, name, image_url)?;
+        let payload = Transaction::payload(
+            sender,
+            &sender_public_key,
+            0.0,
+            &sender_public_key,
+            Some(&asset_operation),
+        );
+        let signature = signing_key.sign(payload.as_bytes());
+
+        Ok(Transaction {
+            sender: sender.to_string(),
+            recipient: sender_public_key.clone(),
+            amount: 0.0,
+            sender_public_key,
+            signature: bytes_to_hex(&signature.to_bytes()),
+            asset_operation: Some(asset_operation),
+        })
+    }
+
+    fn transfer_nft(
+        sender: &str,
+        recipient: String,
+        collection: String,
+        token_id: String,
+        signing_key: &SigningKey,
+    ) -> Result<Self, String> {
+        let sender_public_key = bytes_to_hex(signing_key.verifying_key().as_bytes());
+        let asset_operation = AssetOperation::transfer_nft(collection, token_id)?;
         let payload = Transaction::payload(
             sender,
             &recipient,
@@ -454,6 +512,7 @@ impl Blockchain {
         self.chain.last().unwrap()
     }
 
+    #[cfg(test)]
     fn add_block(
         &mut self,
         mut transactions: Vec<Transaction>,
@@ -1059,6 +1118,8 @@ enum Command {
     Submit(SubmitConfig),
     CoinCreate(CoinCreateConfig),
     CoinTransfer(CoinTransferConfig),
+    NftMint(NftMintConfig),
+    NftTransfer(NftTransferConfig),
     Mine(MineConfig),
     WalletNew(WalletNewConfig),
     WalletExport(WalletExportConfig),
@@ -1112,6 +1173,31 @@ struct CoinTransferConfig {
 }
 
 #[derive(Debug)]
+struct NftMintConfig {
+    peers: Vec<String>,
+    peers_file: Option<String>,
+    wallet_path: String,
+    chain_path: String,
+    mempool_path: String,
+    collection: String,
+    token_id: String,
+    name: String,
+    image_url: Option<String>,
+}
+
+#[derive(Debug)]
+struct NftTransferConfig {
+    peers: Vec<String>,
+    peers_file: Option<String>,
+    wallet_path: String,
+    chain_path: String,
+    mempool_path: String,
+    collection: String,
+    token_id: String,
+    recipient: String,
+}
+
+#[derive(Debug)]
 struct MineConfig {
     listen_addr: Option<String>,
     peers: Vec<String>,
@@ -1154,6 +1240,7 @@ impl Command {
             "node" => NodeConfig::from_args(args).map(Command::Node),
             "submit" => SubmitConfig::from_args(args).map(Command::Submit),
             "coin" => parse_coin_command(args),
+            "nft" => parse_nft_command(args),
             "mine" => MineConfig::from_args(args).map(Command::Mine),
             "wallet" => parse_wallet_command(args),
             "help" | "--help" | "-h" => Ok(Command::Help),
@@ -1446,6 +1533,164 @@ impl CoinTransferConfig {
     }
 }
 
+impl NftMintConfig {
+    fn from_args(args: Vec<String>) -> Result<Self, String> {
+        let mut peers = Vec::new();
+        let mut peers_file = None;
+        let mut wallet_path = None;
+        let mut chain_path = "xyqon-chain.json".to_string();
+        let mut mempool_path = None;
+        let mut collection = None;
+        let mut token_id = None;
+        let mut name = None;
+        let mut image_url = None;
+        let mut args = args.into_iter();
+
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--peer" => {
+                    if let Some(peer) = args.next() {
+                        peers.push(peer);
+                    }
+                }
+                "--peers-file" => {
+                    peers_file = Some(
+                        args.next()
+                            .ok_or_else(|| "--peers-file requires a file path".to_string())?,
+                    );
+                }
+                "--wallet" => wallet_path = args.next(),
+                "--chain" => {
+                    chain_path = args
+                        .next()
+                        .ok_or_else(|| "--chain requires a file path".to_string())?;
+                }
+                "--mempool" => {
+                    mempool_path = Some(
+                        args.next()
+                            .ok_or_else(|| "--mempool requires a file path".to_string())?,
+                    );
+                }
+                "--collection" => {
+                    collection =
+                        Some(args.next().ok_or_else(|| {
+                            "--collection requires a collection symbol".to_string()
+                        })?);
+                }
+                "--token-id" => {
+                    token_id = Some(
+                        args.next()
+                            .ok_or_else(|| "--token-id requires a token id".to_string())?,
+                    );
+                }
+                "--name" => {
+                    name = Some(
+                        args.next()
+                            .ok_or_else(|| "--name requires an NFT name".to_string())?,
+                    );
+                }
+                "--image-url" => {
+                    image_url = Some(
+                        args.next()
+                            .ok_or_else(|| "--image-url requires a URL".to_string())?,
+                    );
+                }
+                _ => return Err(format!("unknown nft mint option: {arg}")),
+            }
+        }
+
+        let mempool_path = mempool_path.unwrap_or_else(|| default_mempool_path(&chain_path));
+        Ok(NftMintConfig {
+            peers,
+            peers_file,
+            wallet_path: wallet_path
+                .ok_or_else(|| "nft mint requires --wallet <FILE>".to_string())?,
+            chain_path,
+            mempool_path,
+            collection: collection
+                .ok_or_else(|| "nft mint requires --collection <SYMBOL>".to_string())?,
+            token_id: token_id.ok_or_else(|| "nft mint requires --token-id <ID>".to_string())?,
+            name: name.ok_or_else(|| "nft mint requires --name <NAME>".to_string())?,
+            image_url,
+        })
+    }
+}
+
+impl NftTransferConfig {
+    fn from_args(args: Vec<String>) -> Result<Self, String> {
+        let mut peers = Vec::new();
+        let mut peers_file = None;
+        let mut wallet_path = None;
+        let mut chain_path = "xyqon-chain.json".to_string();
+        let mut mempool_path = None;
+        let mut collection = None;
+        let mut token_id = None;
+        let mut recipient = None;
+        let mut args = args.into_iter();
+
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--peer" => {
+                    if let Some(peer) = args.next() {
+                        peers.push(peer);
+                    }
+                }
+                "--peers-file" => {
+                    peers_file = Some(
+                        args.next()
+                            .ok_or_else(|| "--peers-file requires a file path".to_string())?,
+                    );
+                }
+                "--wallet" => wallet_path = args.next(),
+                "--chain" => {
+                    chain_path = args
+                        .next()
+                        .ok_or_else(|| "--chain requires a file path".to_string())?;
+                }
+                "--mempool" => {
+                    mempool_path = Some(
+                        args.next()
+                            .ok_or_else(|| "--mempool requires a file path".to_string())?,
+                    );
+                }
+                "--collection" => {
+                    collection =
+                        Some(args.next().ok_or_else(|| {
+                            "--collection requires a collection symbol".to_string()
+                        })?);
+                }
+                "--token-id" => {
+                    token_id = Some(
+                        args.next()
+                            .ok_or_else(|| "--token-id requires a token id".to_string())?,
+                    );
+                }
+                "--to" => {
+                    recipient = Some(
+                        args.next()
+                            .ok_or_else(|| "--to requires a recipient".to_string())?,
+                    );
+                }
+                _ => return Err(format!("unknown nft send option: {arg}")),
+            }
+        }
+
+        let mempool_path = mempool_path.unwrap_or_else(|| default_mempool_path(&chain_path));
+        Ok(NftTransferConfig {
+            peers,
+            peers_file,
+            wallet_path: wallet_path
+                .ok_or_else(|| "nft send requires --wallet <FILE>".to_string())?,
+            chain_path,
+            mempool_path,
+            collection: collection
+                .ok_or_else(|| "nft send requires --collection <SYMBOL>".to_string())?,
+            token_id: token_id.ok_or_else(|| "nft send requires --token-id <ID>".to_string())?,
+            recipient: recipient.ok_or_else(|| "nft send requires --to <RECIPIENT>".to_string())?,
+        })
+    }
+}
+
 impl MineConfig {
     fn from_args(args: Vec<String>) -> Result<Self, String> {
         let mut listen_addr = None;
@@ -1610,6 +1855,19 @@ fn parse_coin_command(mut args: Vec<String>) -> Result<Command, String> {
     }
 }
 
+fn parse_nft_command(mut args: Vec<String>) -> Result<Command, String> {
+    if args.is_empty() {
+        return Ok(Command::Help);
+    }
+
+    let command = args.remove(0);
+    match command.as_str() {
+        "mint" => NftMintConfig::from_args(args).map(Command::NftMint),
+        "send" => NftTransferConfig::from_args(args).map(Command::NftTransfer),
+        _ => Err(format!("unknown nft command: {command}")),
+    }
+}
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("{error}");
@@ -1624,6 +1882,8 @@ fn run() -> Result<(), String> {
         Command::Submit(config) => submit_transaction(config),
         Command::CoinCreate(config) => create_coin(config),
         Command::CoinTransfer(config) => transfer_coin(config),
+        Command::NftMint(config) => mint_nft(config),
+        Command::NftTransfer(config) => transfer_nft(config),
         Command::Mine(config) => run_miner(config),
         Command::WalletNew(config) => create_wallet(config),
         Command::WalletExport(config) => export_wallet(config),
@@ -1742,6 +2002,68 @@ fn transfer_coin(config: CoinTransferConfig) -> Result<(), String> {
         "Submitted 0 XYQON transfer of {} {} from {} to {}",
         config.amount,
         config.symbol.to_ascii_uppercase(),
+        wallet.public_key,
+        config.recipient
+    );
+    Ok(())
+}
+
+fn mint_nft(config: NftMintConfig) -> Result<(), String> {
+    let wallet = WalletFile::load(&config.wallet_path)?;
+    let signing_key = wallet.signing_key()?;
+    let node = Node::new(NodeConfig {
+        listen_addr: None,
+        peers: config.peers,
+        peers_file: config.peers_file,
+        chain_path: config.chain_path,
+        mempool_path: config.mempool_path,
+        advertised_addr: None,
+    })?;
+
+    let transaction = Transaction::mint_nft(
+        &wallet.name,
+        config.collection.clone(),
+        config.token_id.clone(),
+        config.name.clone(),
+        config.image_url.clone(),
+        &signing_key,
+    )?;
+    node.sync_chain_from_peers();
+    node.submit_transaction(transaction)?;
+    println!(
+        "Submitted 0 XYQON NFT mint for {}:{} from {}",
+        config.collection.to_ascii_uppercase(),
+        config.token_id,
+        wallet.public_key
+    );
+    Ok(())
+}
+
+fn transfer_nft(config: NftTransferConfig) -> Result<(), String> {
+    let wallet = WalletFile::load(&config.wallet_path)?;
+    let signing_key = wallet.signing_key()?;
+    let node = Node::new(NodeConfig {
+        listen_addr: None,
+        peers: config.peers,
+        peers_file: config.peers_file,
+        chain_path: config.chain_path,
+        mempool_path: config.mempool_path,
+        advertised_addr: None,
+    })?;
+
+    let transaction = Transaction::transfer_nft(
+        &wallet.name,
+        config.recipient.clone(),
+        config.collection.clone(),
+        config.token_id.clone(),
+        &signing_key,
+    )?;
+    node.sync_chain_from_peers();
+    node.submit_transaction(transaction)?;
+    println!(
+        "Submitted 0 XYQON NFT transfer of {}:{} from {} to {}",
+        config.collection.to_ascii_uppercase(),
+        config.token_id,
         wallet.public_key,
         config.recipient
     );
@@ -2168,6 +2490,8 @@ USAGE:
   xyqon submit --wallet <FILE> --to <RECIPIENT> --amount <AMOUNT> [NETWORK OPTIONS]
   xyqon coin create --wallet <FILE> --symbol <SYMBOL> --name <NAME> --supply <AMOUNT> [NETWORK OPTIONS]
   xyqon coin send --wallet <FILE> --symbol <SYMBOL> --to <RECIPIENT> --amount <AMOUNT> [NETWORK OPTIONS]
+  xyqon nft mint --wallet <FILE> --collection <SYMBOL> --token-id <ID> --name <NAME> [--image-url <URL>] [NETWORK OPTIONS]
+  xyqon nft send --wallet <FILE> --collection <SYMBOL> --token-id <ID> --to <RECIPIENT> [NETWORK OPTIONS]
   xyqon mine --wallet <FILE> [NETWORK OPTIONS]
   xyqon wallet new --name <NAME> --out <FILE>
   xyqon wallet export --wallet <FILE> [--show-private]
@@ -2204,6 +2528,20 @@ COIN OPTIONS:
   --chain <FILE>        Existing live chain file. Defaults to xyqon-chain.json
   --mempool <FILE>      Persistent mempool file. Defaults to <chain>.mempool.json
 
+NFT OPTIONS:
+  nft mint              Submit a free 0 XYQON transaction that mints a unique NFT
+  nft send              Submit a free 0 XYQON NFT ownership transfer
+  --wallet <FILE>       Wallet that signs the NFT transaction
+  --collection <SYMBOL> NFT collection symbol, 2 to 12 letters or numbers
+  --token-id <ID>       Unique NFT id inside the collection
+  --name <NAME>         NFT display name, 1 to 64 characters
+  --image-url <URL>     Optional external image URL for the NFT
+  --to <RECIPIENT>      Recipient public key for nft send
+  --peer <ADDR>         Peer to broadcast the NFT transaction to. Can be repeated
+  --peers-file <FILE>   Load peers from a newline-separated file
+  --chain <FILE>        Existing live chain file. Defaults to xyqon-chain.json
+  --mempool <FILE>      Persistent mempool file. Defaults to <chain>.mempool.json
+
 MINE OPTIONS:
   --wallet <FILE>       Wallet that receives mining rewards
   --listen <ADDR>       Listen for peer blocks and transactions while mining
@@ -2236,7 +2574,9 @@ BUILDING ON XYQON:
   Coin creation and coin sends are signed 0 XYQON transactions.
   The creator chooses the fixed supply when the coin is created.
   No later transaction can mint more units of that coin.
-  Miners receive the normal XYQON block reward for including these transactions in a block.
+  NFT minting assigns ownership to the creator and may include an external image URL.
+  NFT sends transfer ownership of an existing NFT.
+  Miners receive the normal XYQON block reward for including asset transactions in a block.
 "#
     );
 }
@@ -2515,6 +2855,155 @@ mod tests {
         .expect("coin transfer transaction should build");
 
         let result = blockchain.add_block(vec![overspend], miner_public_key);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn nft_mint_accepts_optional_image_url_and_assigns_creator_ownership() {
+        let creator_key = SigningKey::from_bytes(&[9; 32]);
+        let creator_public_key = bytes_to_hex(creator_key.verifying_key().as_bytes());
+        let miner_key = SigningKey::from_bytes(&[8; 32]);
+        let miner_public_key = bytes_to_hex(miner_key.verifying_key().as_bytes());
+        let mut blockchain = blockchain_with_genesis();
+
+        let mint = Transaction::mint_nft(
+            "creator",
+            "ITEMS".to_string(),
+            "sword-001".to_string(),
+            "Iron Sword".to_string(),
+            Some("https://example.com/iron-sword.png".to_string()),
+            &creator_key,
+        )
+        .expect("NFT mint transaction should build");
+
+        assert!(mint.is_valid_signed_transaction());
+        assert!(amounts_equal(mint.amount, 0.0));
+
+        blockchain
+            .add_block(vec![mint], miner_public_key)
+            .expect("NFT mint should be accepted");
+
+        let ledger = AssetLedger::from_chain(&blockchain.chain).expect("asset ledger should build");
+        assert_eq!(
+            ledger.nft_owner("ITEMS", "sword-001"),
+            Some(creator_public_key.as_str())
+        );
+    }
+
+    #[test]
+    fn chain_rejects_duplicate_nft_ids() {
+        let creator_key = SigningKey::from_bytes(&[9; 32]);
+        let miner_key = SigningKey::from_bytes(&[8; 32]);
+        let miner_public_key = bytes_to_hex(miner_key.verifying_key().as_bytes());
+        let mut blockchain = blockchain_with_genesis();
+
+        let first = Transaction::mint_nft(
+            "creator",
+            "ITEMS".to_string(),
+            "sword-001".to_string(),
+            "Iron Sword".to_string(),
+            None,
+            &creator_key,
+        )
+        .expect("first NFT mint transaction should build");
+        let duplicate = Transaction::mint_nft(
+            "creator",
+            "items".to_string(),
+            "sword-001".to_string(),
+            "Another Sword".to_string(),
+            Some("https://example.com/another-sword.png".to_string()),
+            &creator_key,
+        )
+        .expect("duplicate NFT mint transaction should build");
+
+        blockchain
+            .add_block(vec![first], miner_public_key.clone())
+            .expect("first NFT mint should be accepted");
+
+        let result = blockchain.add_block(vec![duplicate], miner_public_key);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn nft_transfer_moves_ownership_without_spending_xyqon() {
+        let creator_key = SigningKey::from_bytes(&[9; 32]);
+        let recipient_key = SigningKey::from_bytes(&[10; 32]);
+        let recipient_public_key = bytes_to_hex(recipient_key.verifying_key().as_bytes());
+        let miner_key = SigningKey::from_bytes(&[8; 32]);
+        let miner_public_key = bytes_to_hex(miner_key.verifying_key().as_bytes());
+        let mut blockchain = blockchain_with_genesis();
+
+        let mint = Transaction::mint_nft(
+            "creator",
+            "ITEMS".to_string(),
+            "sword-001".to_string(),
+            "Iron Sword".to_string(),
+            Some("https://example.com/iron-sword.png".to_string()),
+            &creator_key,
+        )
+        .expect("NFT mint transaction should build");
+        blockchain
+            .add_block(vec![mint], miner_public_key.clone())
+            .expect("NFT mint should be accepted");
+
+        let transfer = Transaction::transfer_nft(
+            "creator",
+            recipient_public_key.clone(),
+            "ITEMS".to_string(),
+            "sword-001".to_string(),
+            &creator_key,
+        )
+        .expect("NFT transfer transaction should build");
+
+        assert!(transfer.is_valid_signed_transaction());
+        assert!(amounts_equal(transfer.amount, 0.0));
+
+        blockchain
+            .add_block(vec![transfer], miner_public_key)
+            .expect("NFT transfer should be accepted");
+
+        let ledger = AssetLedger::from_chain(&blockchain.chain).expect("asset ledger should build");
+        assert_eq!(
+            ledger.nft_owner("ITEMS", "sword-001"),
+            Some(recipient_public_key.as_str())
+        );
+    }
+
+    #[test]
+    fn chain_rejects_nft_transfer_by_non_owner() {
+        let creator_key = SigningKey::from_bytes(&[9; 32]);
+        let non_owner_key = SigningKey::from_bytes(&[11; 32]);
+        let recipient_key = SigningKey::from_bytes(&[10; 32]);
+        let recipient_public_key = bytes_to_hex(recipient_key.verifying_key().as_bytes());
+        let miner_key = SigningKey::from_bytes(&[8; 32]);
+        let miner_public_key = bytes_to_hex(miner_key.verifying_key().as_bytes());
+        let mut blockchain = blockchain_with_genesis();
+
+        let mint = Transaction::mint_nft(
+            "creator",
+            "ITEMS".to_string(),
+            "sword-001".to_string(),
+            "Iron Sword".to_string(),
+            Some("https://example.com/iron-sword.png".to_string()),
+            &creator_key,
+        )
+        .expect("NFT mint transaction should build");
+        blockchain
+            .add_block(vec![mint], miner_public_key.clone())
+            .expect("NFT mint should be accepted");
+
+        let transfer = Transaction::transfer_nft(
+            "non-owner",
+            recipient_public_key,
+            "ITEMS".to_string(),
+            "sword-001".to_string(),
+            &non_owner_key,
+        )
+        .expect("NFT transfer transaction should build");
+
+        let result = blockchain.add_block(vec![transfer], miner_public_key);
 
         assert!(result.is_err());
     }

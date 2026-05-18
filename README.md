@@ -48,6 +48,7 @@ The app has these command groups:
 - `node`: run a blockchain node
 - `submit`: sign and broadcast a transaction without mining
 - `coin`: create a basic coin on top of XYQON
+- `nft`: mint and transfer game NFTs on top of XYQON
 - `mine`: run a miner that competes for block rewards
 - `wallet`: create or inspect wallet keys
 
@@ -197,6 +198,35 @@ xyqon coin send \
   --amount 25 \
   --chain /var/lib/xyqon/xyqon-chain.json
 ```
+
+## Mint An NFT
+
+Use `nft mint` to mint a unique game item or collectible on XYQON. NFT minting is a signed `0 XYQON` transaction. The optional image URL points to external artwork, keeping the blockchain focused on ownership and metadata instead of storing image data.
+
+```bash
+xyqon nft mint \
+  --peers-file /etc/xyqon/peers.txt \
+  --wallet player.wallet.json \
+  --collection GAMEITEMS \
+  --token-id sword-001 \
+  --name "Iron Sword" \
+  --image-url https://example.com/game-assets/iron-sword.png \
+  --chain /var/lib/xyqon/xyqon-chain.json
+```
+
+Use `nft send` to transfer the NFT to another wallet:
+
+```bash
+xyqon nft send \
+  --peers-file /etc/xyqon/peers.txt \
+  --wallet player.wallet.json \
+  --collection GAMEITEMS \
+  --token-id sword-001 \
+  --to RECIPIENT_PUBLIC_KEY \
+  --chain /var/lib/xyqon/xyqon-chain.json
+```
+
+An NFT id can only be minted once per collection. Only the current owner can transfer it.
 
 ## Run A Miner
 
