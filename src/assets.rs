@@ -43,11 +43,6 @@ pub struct NftTransfer {
 
 #[derive(Debug, Clone)]
 pub struct NftRecord {
-    pub collection: String,
-    pub token_id: String,
-    pub name: String,
-    pub image_url: Option<String>,
-    pub creator_public_key: String,
     pub owner_public_key: String,
 }
 
@@ -168,6 +163,7 @@ impl AssetLedger {
             .unwrap_or(&0.0)
     }
 
+    #[cfg(test)]
     pub fn nft_owner(&self, collection: &str, token_id: &str) -> Option<&str> {
         let key = (
             collection.to_ascii_uppercase(),
@@ -234,8 +230,8 @@ impl AssetLedger {
     fn mint_nft(&mut self, transaction: &Transaction, nft: &NftMint) -> Result<(), String> {
         let collection = normalize_symbol(&nft.collection)?;
         let token_id = normalize_token_id(&nft.token_id)?;
-        let name = normalize_name(&nft.name)?;
-        let image_url = normalize_optional_image_url(nft.image_url.clone())?;
+        normalize_name(&nft.name)?;
+        normalize_optional_image_url(nft.image_url.clone())?;
         let key = (collection.clone(), token_id.clone());
 
         if self.nfts.contains_key(&key) {
@@ -247,17 +243,7 @@ impl AssetLedger {
             return Err("NFT creator public key cannot be empty".to_string());
         }
 
-        self.nfts.insert(
-            key,
-            NftRecord {
-                collection,
-                token_id,
-                name,
-                image_url,
-                creator_public_key: owner_public_key.clone(),
-                owner_public_key,
-            },
-        );
+        self.nfts.insert(key, NftRecord { owner_public_key });
         Ok(())
     }
 
