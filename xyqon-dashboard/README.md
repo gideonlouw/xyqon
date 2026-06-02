@@ -8,6 +8,8 @@ It shows:
 - Current block height and circulating supply
 - Public addresses seen on-chain
 - Rich list sorted by balance
+- Coins and holders seen on-chain
+- NFTs and current owners seen on-chain
 - Recent blocks
 - Recent transactions
 - Explorer search for addresses, blocks, and transactions
@@ -60,4 +62,5 @@ The local API proxy exposes:
 /api/address/<PUBLIC_KEY>
 /api/block/<HEIGHT_OR_HASH>
 /api/transaction/<TRANSACTION_ID>
+/api/assets
 ```

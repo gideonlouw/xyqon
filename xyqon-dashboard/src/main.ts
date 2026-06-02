@@ -9,6 +9,12 @@ type Transaction = {
   amount: number;
   sender_public_key: string;
   signature: string;
+  asset_operation?: {
+    CreateCoin?: { symbol: string; name: string; supply: number };
+    TransferCoin?: { symbol: string; amount: number };
+    MintNft?: { collection: string; token_id: string; name: string; image_url?: string };
+    TransferNft?: { collection: string; token_id: string };
+  };
 };
 
 type Block = {
@@ -48,6 +54,24 @@ type AddressBalance = {
   transactions: number;
 };
 
+type CoinAsset = {
+  symbol: string;
+  name: string;
+  supply: number;
+  transactions: number;
+  holders: { address: string; balance: number }[];
+};
+
+type NftAsset = {
+  collection: string;
+  tokenId: string;
+  name: string;
+  imageUrl: string | null;
+  owner: string;
+  mintedInBlock: number;
+  lastTransferBlock: number | null;
+};
+
 type DashboardResponse = {
   generatedAt: string;
   sourceNode: string | null;
@@ -62,6 +86,8 @@ type DashboardResponse = {
   };
   richList: AddressBalance[];
   publicAddresses: AddressBalance[];
+  coins: CoinAsset[];
+  nfts: NftAsset[];
   recentBlocks: Block[];
   recentTransactions: ExplorerTransaction[];
 };
@@ -102,6 +128,14 @@ type DashboardResponse = {
           <article>
             <span>Known Addresses</span>
             <strong>{{ data.publicAddresses.length | number }}</strong>
+          </article>
+          <article>
+            <span>Coins</span>
+            <strong>{{ data.coins.length | number }}</strong>
+          </article>
+          <article>
+            <span>NFTs</span>
+            <strong>{{ data.nfts.length | number }}</strong>
           </article>
         </section>
 
@@ -183,7 +217,7 @@ type DashboardResponse = {
               @if (matchedTransaction(); as transaction) {
                 <article>
                   <span>Transaction</span>
-                  <p>{{ transaction.amount | number:'1.0-8' }} XYQON in block #{{ transaction.blockIndex }}</p>
+                  <p>{{ transactionLabel(transaction) }} in block #{{ transaction.blockIndex }}</p>
                   <strong class="mono wrap">{{ transaction.id }}</strong>
                 </article>
               }
@@ -195,6 +229,66 @@ type DashboardResponse = {
               }
             </div>
           }
+        </section>
+
+        <section class="grid two assets-grid">
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Network Coins</h2>
+              <span>{{ data.coins.length }} active symbols</span>
+            </div>
+            <div class="coin-list">
+              @for (coin of data.coins; track coin.symbol) {
+                <article>
+                  <div class="asset-title">
+                    <div>
+                      <strong>{{ coin.symbol }}</strong>
+                      <span>{{ coin.name }}</span>
+                    </div>
+                    <em>{{ coin.supply | number:'1.0-8' }}</em>
+                  </div>
+                  <div class="holders">
+                    @for (holder of coin.holders.slice(0, 4); track holder.address) {
+                      <p>
+                        <span class="mono wrap">{{ holder.address }}</span>
+                        <strong>{{ holder.balance | number:'1.0-8' }}</strong>
+                      </p>
+                    }
+                    @if (!coin.holders.length) {
+                      <p><span>No holders yet</span></p>
+                    }
+                  </div>
+                </article>
+              }
+              @if (!data.coins.length) {
+                <article class="empty-asset">No coins have been mined into the current chain yet.</article>
+              }
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>NFT Owners</h2>
+              <span>{{ data.nfts.length }} minted NFTs</span>
+            </div>
+            <div class="nft-list">
+              @for (nft of data.nfts; track nft.collection + ':' + nft.tokenId) {
+                <article [class.no-image]="!nft.imageUrl">
+                  @if (nft.imageUrl) {
+                    <img [src]="nft.imageUrl" [alt]="nft.name" loading="lazy">
+                  }
+                  <div>
+                    <strong>{{ nft.collection }}:{{ nft.tokenId }}</strong>
+                    <span>{{ nft.name }}</span>
+                    <p class="mono wrap">{{ nft.owner }}</p>
+                  </div>
+                </article>
+              }
+              @if (!data.nfts.length) {
+                <article class="empty-asset">No NFTs have been mined into the current chain yet.</article>
+              }
+            </div>
+          </div>
         </section>
 
         <section class="panel">
@@ -211,10 +305,10 @@ type DashboardResponse = {
             </div>
             @for (transaction of data.recentTransactions; track transaction.id) {
               <div class="row">
-                <span>{{ transaction.isCoinbase ? 'Reward' : 'Transfer' }}</span>
+                <span>{{ transactionType(transaction) }}</span>
                 <span>#{{ transaction.blockIndex }}</span>
                 <span class="mono wrap">{{ transaction.recipient }}</span>
-                <span>{{ transaction.amount | number:'1.0-8' }}</span>
+                <span>{{ transactionLabel(transaction) }}</span>
               </div>
             }
           </div>
@@ -290,6 +384,43 @@ class App {
       ? this.dashboard()?.recentTransactions.find((transaction) => transaction.id === value) ?? null
       : null;
   });
+
+  transactionType(transaction: ExplorerTransaction) {
+    const operation = transaction.asset_operation;
+    if (transaction.isCoinbase) {
+      return 'Reward';
+    }
+    if (operation?.CreateCoin) {
+      return 'Coin Create';
+    }
+    if (operation?.TransferCoin) {
+      return 'Coin Send';
+    }
+    if (operation?.MintNft) {
+      return 'NFT Mint';
+    }
+    if (operation?.TransferNft) {
+      return 'NFT Send';
+    }
+    return 'Transfer';
+  }
+
+  transactionLabel(transaction: ExplorerTransaction) {
+    const operation = transaction.asset_operation;
+    if (operation?.CreateCoin) {
+      return `${operation.CreateCoin.supply} ${operation.CreateCoin.symbol}`;
+    }
+    if (operation?.TransferCoin) {
+      return `${operation.TransferCoin.amount} ${operation.TransferCoin.symbol}`;
+    }
+    if (operation?.MintNft) {
+      return `${operation.MintNft.collection}:${operation.MintNft.token_id}`;
+    }
+    if (operation?.TransferNft) {
+      return `${operation.TransferNft.collection}:${operation.TransferNft.token_id}`;
+    }
+    return `${transaction.amount} XYQON`;
+  }
 
   constructor() {
     this.load();

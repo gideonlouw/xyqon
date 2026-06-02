@@ -81,7 +81,7 @@ h2 {
 
 .metrics {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 12px;
   margin-bottom: 14px;
 }
@@ -267,9 +267,96 @@ i {
   overflow-wrap: anywhere;
 }
 
+.assets-grid {
+  align-items: start;
+}
+
+.coin-list,
+.nft-list {
+  display: grid;
+  gap: 1px;
+  background: #e5edf2;
+}
+
+.coin-list article,
+.nft-list article {
+  background: #fff;
+  padding: 14px 16px;
+}
+
+.asset-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.asset-title strong {
+  display: block;
+  font-size: 18px;
+}
+
+.asset-title span,
+.nft-list span {
+  color: #647987;
+  display: block;
+  font-size: 13px;
+  margin-top: 3px;
+}
+
+.asset-title em {
+  color: #17384b;
+  font-style: normal;
+  font-weight: 800;
+  text-align: right;
+}
+
+.holders {
+  margin-top: 12px;
+}
+
+.holders p {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 110px;
+  gap: 10px;
+  margin: 0;
+  min-height: 28px;
+  align-items: center;
+}
+
+.holders strong {
+  text-align: right;
+}
+
+.nft-list article {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 12px;
+  min-height: 96px;
+}
+
+.nft-list img {
+  width: 72px;
+  height: 72px;
+  border: 1px solid #dbe4ea;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+.nft-list article.no-image {
+  grid-template-columns: 1fr;
+}
+
+.nft-list p {
+  margin: 8px 0 0;
+}
+
+.empty-asset {
+  color: #647987;
+  min-height: 74px;
+}
+
 @media (max-width: 980px) {
-  .metrics,
-  .grid.two {
+  .metrics {
     grid-template-columns: 1fr 1fr;
   }
 

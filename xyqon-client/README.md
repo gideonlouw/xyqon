@@ -8,6 +8,8 @@ It can:
 - Show your public key
 - Check your balance from live public nodes
 - Send a signed transaction to the network
+- Create and send coins on the XYQON network
+- Mint and transfer NFTs
 - Show currently reachable nodes
 
 You do not need to mine and you do not need to run a full node.
@@ -15,13 +17,13 @@ You do not need to mine and you do not need to run a full node.
 ## Install
 
 ```bash
-npm install -g xyqon-client
+npm install -g xyqon
 ```
 
 Or run without installing:
 
 ```bash
-npx xyqon-client help
+npx xyqon help
 ```
 
 ## Create A Wallet
@@ -66,6 +68,37 @@ xyqon send \
 
 The transaction is broadcast to reachable public nodes. A miner must include it in a block before the receiver sees the confirmed balance.
 
+## Create And Send Coins
+
+```bash
+xyqon coin create \
+  --symbol GAME \
+  --name "Game Coin" \
+  --supply 1000000
+
+xyqon coin send \
+  --symbol GAME \
+  --to RECIPIENT_PUBLIC_KEY \
+  --amount 25
+```
+
+Coin creation and coin sends are signed 0 XYQON transactions. A miner must include them before the new coin or transfer appears on-chain.
+
+## Mint And Send NFTs
+
+```bash
+xyqon nft mint \
+  --collection ITEMS \
+  --token-id sword-001 \
+  --name "Iron Sword" \
+  --image-url https://example.com/iron-sword.png
+
+xyqon nft send \
+  --collection ITEMS \
+  --token-id sword-001 \
+  --to RECIPIENT_PUBLIC_KEY
+```
+
 ## Show Nodes
 
 ```bash
@@ -95,8 +128,16 @@ import {
   createWallet,
   loadWallet,
   getBalance,
-  sendTransaction
-} from 'xyqon-client';
+  sendTransaction,
+  createCoin,
+  sendCoin,
+  mintNft,
+  transferNft,
+  getCreatedCoins,
+  getCreatedNfts,
+  getOwnedNfts,
+  getCoinHoldings
+} from 'xyqon';
 
 const wallet = createWallet('Cathy');
 console.log(wallet.public_key);
@@ -109,4 +150,38 @@ await sendTransaction({
   recipient: 'RECIPIENT_PUBLIC_KEY',
   amount: 1
 });
+
+await createCoin({
+  wallet,
+  symbol: 'GAME',
+  name: 'Game Coin',
+  supply: 1000000
+});
+
+await sendCoin({
+  wallet,
+  recipient: 'RECIPIENT_PUBLIC_KEY',
+  symbol: 'GAME',
+  amount: 25
+});
+
+await mintNft({
+  wallet,
+  collection: 'ITEMS',
+  tokenId: 'sword-001',
+  name: 'Iron Sword',
+  imageUrl: 'https://example.com/iron-sword.png'
+});
+
+await transferNft({
+  wallet,
+  recipient: 'RECIPIENT_PUBLIC_KEY',
+  collection: 'ITEMS',
+  tokenId: 'sword-001'
+});
+
+const createdCoins = await getCreatedCoins(wallet);
+const createdNfts = await getCreatedNfts(wallet);
+const ownedNfts = await getOwnedNfts(wallet);
+const coinHoldings = await getCoinHoldings(wallet);
 ```

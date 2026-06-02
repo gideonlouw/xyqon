@@ -1,6 +1,6 @@
 {
   "name": "xyqon",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Friendly wallet CLI and JavaScript client for the XYQON network.",
   "keywords": [
     "xyqon",
@@ -23,7 +23,7 @@
   "exports": {
     ".": "./src/index.js"
   },
-  "main": "index.js",
+  "main": "./src/index.js",
   "bin": {
     "xyqon": "src/cli.js",
     "xyqon-client": "src/cli.js"

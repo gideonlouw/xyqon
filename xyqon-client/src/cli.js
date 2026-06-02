@@ -3,11 +3,15 @@ import {
   DEFAULT_PEERS,
   DEFAULT_WALLET_PATH,
   createWallet,
+  createCoin,
   discoverPeers,
   getBalance,
   getBestChain,
   loadWallet,
+  mintNft,
   saveWallet,
+  sendCoin,
+  transferNft,
   sendTransaction
 } from './index.js';
 
@@ -39,6 +43,10 @@ ${color('bold', 'Usage')}
   xyqon wallet show [--wallet <FILE>] [--private]
   xyqon balance [--wallet <FILE>] [--address <PUBLIC_KEY>]
   xyqon send --to <PUBLIC_KEY> --amount <AMOUNT> [--wallet <FILE>]
+  xyqon coin create --symbol <SYMBOL> --name <NAME> --supply <AMOUNT> [--wallet <FILE>]
+  xyqon coin send --symbol <SYMBOL> --to <PUBLIC_KEY> --amount <AMOUNT> [--wallet <FILE>]
+  xyqon nft mint --collection <SYMBOL> --token-id <ID> --name <NAME> [--image-url <URL>] [--wallet <FILE>]
+  xyqon nft send --collection <SYMBOL> --token-id <ID> --to <PUBLIC_KEY> [--wallet <FILE>]
   xyqon nodes
 
 ${color('bold', 'Network options')}
@@ -88,8 +96,8 @@ function peersFromOptions(options) {
 async function run() {
   const argv = process.argv.slice(2);
   const command = argv[0];
-  const subcommand = command === 'wallet' ? argv[1] : undefined;
-  const rest = command === 'wallet' ? argv.slice(2) : argv.slice(1);
+  const subcommand = command === 'wallet' || command === 'coin' || command === 'nft' ? argv[1] : undefined;
+  const rest = command === 'wallet' || command === 'coin' || command === 'nft' ? argv.slice(2) : argv.slice(1);
   const options = parseArgs(rest);
 
   if (!command || command === 'help' || command === '--help' || command === '-h') {
@@ -153,6 +161,120 @@ async function run() {
     console.log(`${color('bold', 'Transaction ID:')} ${result.transactionId}`);
     console.log(`${color('green', 'Broadcast:')} ${result.acceptedBy}/${result.peers.length} reachable nodes`);
     console.log(color('yellow', 'The receiver balance updates after a miner includes this transaction in a block.'));
+    return;
+  }
+
+  if (command === 'coin' && subcommand === 'create') {
+    if (!options.symbol) {
+      throw new Error('coin create requires --symbol <SYMBOL>');
+    }
+    if (!options.name) {
+      throw new Error('coin create requires --name <NAME>');
+    }
+    if (!options.supply) {
+      throw new Error('coin create requires --supply <AMOUNT>');
+    }
+
+    const wallet = await loadWallet(options.wallet ?? DEFAULT_WALLET_PATH);
+    const result = await createCoin({
+      wallet,
+      symbol: options.symbol,
+      name: options.name,
+      supply: options.supply,
+      peers: peersFromOptions(options)
+    });
+
+    printHero('Coin Created');
+    console.log(`${color('bold', 'Symbol:')} ${result.transaction.asset_operation.CreateCoin.symbol}`);
+    console.log(`${color('bold', 'Supply:')} ${result.transaction.asset_operation.CreateCoin.supply}`);
+    console.log(`${color('bold', 'Transaction ID:')} ${result.transactionId}`);
+    console.log(`${color('green', 'Broadcast:')} ${result.acceptedBy}/${result.peers.length} reachable nodes`);
+    console.log(color('yellow', 'The coin exists after a miner includes this transaction in a block.'));
+    return;
+  }
+
+  if (command === 'coin' && subcommand === 'send') {
+    if (!options.symbol) {
+      throw new Error('coin send requires --symbol <SYMBOL>');
+    }
+    if (!options.to) {
+      throw new Error('coin send requires --to <PUBLIC_KEY>');
+    }
+    if (!options.amount) {
+      throw new Error('coin send requires --amount <AMOUNT>');
+    }
+
+    const wallet = await loadWallet(options.wallet ?? DEFAULT_WALLET_PATH);
+    const result = await sendCoin({
+      wallet,
+      recipient: options.to,
+      symbol: options.symbol,
+      amount: options.amount,
+      peers: peersFromOptions(options)
+    });
+
+    printHero('Coin Sent');
+    console.log(`${color('bold', 'Amount:')} ${result.transaction.asset_operation.TransferCoin.amount} ${result.transaction.asset_operation.TransferCoin.symbol}`);
+    console.log(`${color('bold', 'To:')} ${result.transaction.recipient}`);
+    console.log(`${color('bold', 'Transaction ID:')} ${result.transactionId}`);
+    console.log(`${color('green', 'Broadcast:')} ${result.acceptedBy}/${result.peers.length} reachable nodes`);
+    return;
+  }
+
+  if (command === 'nft' && subcommand === 'mint') {
+    if (!options.collection) {
+      throw new Error('nft mint requires --collection <SYMBOL>');
+    }
+    if (!options['token-id']) {
+      throw new Error('nft mint requires --token-id <ID>');
+    }
+    if (!options.name) {
+      throw new Error('nft mint requires --name <NAME>');
+    }
+
+    const wallet = await loadWallet(options.wallet ?? DEFAULT_WALLET_PATH);
+    const result = await mintNft({
+      wallet,
+      collection: options.collection,
+      tokenId: options['token-id'],
+      name: options.name,
+      imageUrl: options['image-url'],
+      peers: peersFromOptions(options)
+    });
+
+    printHero('NFT Minted');
+    console.log(`${color('bold', 'NFT:')} ${result.transaction.asset_operation.MintNft.collection}:${result.transaction.asset_operation.MintNft.token_id}`);
+    console.log(`${color('bold', 'Transaction ID:')} ${result.transactionId}`);
+    console.log(`${color('green', 'Broadcast:')} ${result.acceptedBy}/${result.peers.length} reachable nodes`);
+    console.log(color('yellow', 'The NFT exists after a miner includes this transaction in a block.'));
+    return;
+  }
+
+  if (command === 'nft' && subcommand === 'send') {
+    if (!options.collection) {
+      throw new Error('nft send requires --collection <SYMBOL>');
+    }
+    if (!options['token-id']) {
+      throw new Error('nft send requires --token-id <ID>');
+    }
+    if (!options.to) {
+      throw new Error('nft send requires --to <PUBLIC_KEY>');
+    }
+
+    const wallet = await loadWallet(options.wallet ?? DEFAULT_WALLET_PATH);
+    const result = await transferNft({
+      wallet,
+      recipient: options.to,
+      collection: options.collection,
+      tokenId: options['token-id'],
+      peers: peersFromOptions(options)
+    });
+
+    printHero('NFT Sent');
+    console.log(`${color('bold', 'NFT:')} ${result.transaction.asset_operation.TransferNft.collection}:${result.transaction.asset_operation.TransferNft.token_id}`);
+    console.log(`${color('bold', 'To:')} ${result.transaction.recipient}`);
+    console.log(`${color('bold', 'Transaction ID:')} ${result.transactionId}`);
+    console.log(`${color('green', 'Broadcast:')} ${result.acceptedBy}/${result.peers.length} reachable nodes`);
     return;
   }
 

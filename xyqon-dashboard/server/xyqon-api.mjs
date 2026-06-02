@@ -151,6 +151,9 @@ function buildBalances(chain) {
     }
 
     for (const tx of transactions) {
+      if (tx.asset_operation) {
+        continue;
+      }
       const senderAddress = tx.sender_public_key || tx.sender;
       const sender = ensure(senderAddress);
       const recipient = ensure(tx.recipient);
@@ -166,6 +169,101 @@ function buildBalances(chain) {
   return [...balances.values()]
     .filter((entry) => Math.abs(entry.balance) > 0.00000001 || entry.transactions > 0)
     .sort((a, b) => b.balance - a.balance);
+}
+
+function normalizeSymbol(symbol) {
+  return `${symbol}`.trim().toUpperCase();
+}
+
+function normalizeTokenId(tokenId) {
+  return `${tokenId}`.trim().toLowerCase();
+}
+
+function buildAssets(chain) {
+  const coins = new Map();
+  const nfts = new Map();
+
+  const ensureCoin = (symbol, name = symbol, supply = 0) => {
+    if (!coins.has(symbol)) {
+      coins.set(symbol, {
+        symbol,
+        name,
+        supply,
+        transactions: 0,
+        holders: new Map()
+      });
+    }
+    return coins.get(symbol);
+  };
+
+  const addCoinBalance = (symbol, address, amount) => {
+    const coin = ensureCoin(symbol);
+    coin.holders.set(address, (coin.holders.get(address) ?? 0) + amount);
+  };
+
+  for (const block of chain.chain.slice(1)) {
+    for (const tx of block.transactions.slice(1)) {
+      const operation = tx.asset_operation;
+      if (!operation) {
+        continue;
+      }
+
+      if (operation.CreateCoin) {
+        const coin = operation.CreateCoin;
+        const symbol = normalizeSymbol(coin.symbol);
+        const record = ensureCoin(symbol, coin.name, coin.supply);
+        record.transactions += 1;
+        addCoinBalance(symbol, tx.sender_public_key, coin.supply);
+      } else if (operation.TransferCoin) {
+        const transfer = operation.TransferCoin;
+        const symbol = normalizeSymbol(transfer.symbol);
+        const record = ensureCoin(symbol);
+        record.transactions += 1;
+        addCoinBalance(symbol, tx.sender_public_key, -transfer.amount);
+        addCoinBalance(symbol, tx.recipient, transfer.amount);
+      } else if (operation.MintNft) {
+        const nft = operation.MintNft;
+        const collection = normalizeSymbol(nft.collection);
+        const tokenId = normalizeTokenId(nft.token_id);
+        nfts.set(`${collection}:${tokenId}`, {
+          collection,
+          tokenId,
+          name: nft.name,
+          imageUrl: nft.image_url ?? null,
+          owner: tx.sender_public_key,
+          mintedInBlock: block.index,
+          lastTransferBlock: null
+        });
+      } else if (operation.TransferNft) {
+        const transfer = operation.TransferNft;
+        const collection = normalizeSymbol(transfer.collection);
+        const tokenId = normalizeTokenId(transfer.token_id);
+        const record = nfts.get(`${collection}:${tokenId}`);
+        if (record) {
+          record.owner = tx.recipient;
+          record.lastTransferBlock = block.index;
+        }
+      }
+    }
+  }
+
+  return {
+    coins: [...coins.values()]
+      .map((coin) => ({
+        symbol: coin.symbol,
+        name: coin.name,
+        supply: coin.supply,
+        transactions: coin.transactions,
+        holders: [...coin.holders.entries()]
+          .map(([address, balance]) => ({ address, balance }))
+          .filter((holder) => Math.abs(holder.balance) > 0.00000001)
+          .sort((a, b) => b.balance - a.balance)
+      }))
+      .sort((a, b) => a.symbol.localeCompare(b.symbol)),
+    nfts: [...nfts.values()].sort((a, b) =>
+      `${a.collection}:${a.tokenId}`.localeCompare(`${b.collection}:${b.tokenId}`)
+    )
+  };
 }
 
 function transactionId(transaction) {
@@ -211,6 +309,7 @@ async function getDashboard() {
   const { knownPeers, seedPeers, nodes, best, chain } = await getNetworkSnapshot();
   const latestBlock = chain.chain.at(-1) ?? null;
   const balances = buildBalances(chain);
+  const assets = buildAssets(chain);
   const transactions = flattenTransactions(chain);
 
   return {
@@ -228,6 +327,8 @@ async function getDashboard() {
     },
     richList: balances.slice(0, 25),
     publicAddresses: balances,
+    coins: assets.coins,
+    nfts: assets.nfts,
     recentBlocks: chain.chain.slice(-8).reverse(),
     recentTransactions: transactions.slice(-12).reverse()
   };
@@ -266,6 +367,11 @@ async function getTransaction(id) {
   return { sourceNode: best?.peer ?? null, transaction: transaction ?? null };
 }
 
+async function getAssets() {
+  const { chain, best } = await getNetworkSnapshot();
+  return { sourceNode: best?.peer ?? null, ...buildAssets(chain) };
+}
+
 async function sendJson(response, status, body) {
   response.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
@@ -302,6 +408,11 @@ async function handleRequest(request, response) {
       200,
       await getTransaction(decodeURIComponent(url.pathname.slice('/api/transaction/'.length)))
     );
+    return;
+  }
+
+  if (url.pathname === '/api/assets') {
+    await sendJson(response, 200, await getAssets());
     return;
   }
 

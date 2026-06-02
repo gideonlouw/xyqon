@@ -60,8 +60,117 @@ export async function loadWallet(path = DEFAULT_WALLET_PATH) {
   return wallet;
 }
 
-export function transactionPayload(sender, recipient, amount, senderPublicKey) {
-  return `${sender}|${recipient}|${Number(amount).toFixed(8)}|${senderPublicKey}`;
+function rustJsonNumber(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    throw new Error('amount must be a finite number');
+  }
+
+  return Number.isInteger(numeric) ? `${numeric}.0` : `${numeric}`;
+}
+
+function jsonString(value) {
+  return JSON.stringify(`${value}`);
+}
+
+function stringifyAssetOperationForSigning(assetOperation) {
+  if (!assetOperation) {
+    return null;
+  }
+
+  if (assetOperation.CreateCoin) {
+    const coin = assetOperation.CreateCoin;
+    return `{"CreateCoin":{"symbol":${jsonString(coin.symbol)},"name":${jsonString(coin.name)},"supply":${rustJsonNumber(coin.supply)}}}`;
+  }
+
+  if (assetOperation.TransferCoin) {
+    const transfer = assetOperation.TransferCoin;
+    return `{"TransferCoin":{"symbol":${jsonString(transfer.symbol)},"amount":${rustJsonNumber(transfer.amount)}}}`;
+  }
+
+  if (assetOperation.MintNft) {
+    const nft = assetOperation.MintNft;
+    const imageUrl = nft.image_url ? `,"image_url":${jsonString(nft.image_url)}` : '';
+    return `{"MintNft":{"collection":${jsonString(nft.collection)},"token_id":${jsonString(nft.token_id)},"name":${jsonString(nft.name)}${imageUrl}}}`;
+  }
+
+  if (assetOperation.TransferNft) {
+    const transfer = assetOperation.TransferNft;
+    return `{"TransferNft":{"collection":${jsonString(transfer.collection)},"token_id":${jsonString(transfer.token_id)}}}`;
+  }
+
+  throw new Error('unknown asset operation');
+}
+
+export function transactionPayload(sender, recipient, amount, senderPublicKey, assetOperation = null) {
+  const base = `${sender}|${recipient}|${Number(amount).toFixed(8)}|${senderPublicKey}`;
+  const serializedAsset = stringifyAssetOperationForSigning(assetOperation);
+  return serializedAsset ? `${base}|${serializedAsset}` : base;
+}
+
+function assertWalletMatchesPrivateKey(wallet, privateKey) {
+  const senderPublicKey = bytesToHex(ed25519.getPublicKey(privateKey));
+  if (senderPublicKey !== wallet.public_key) {
+    throw new Error('wallet public key does not match its private key');
+  }
+
+  return senderPublicKey;
+}
+
+function createSignedAssetTransaction(wallet, recipient, assetOperation) {
+  const privateKey = hexToBytes(wallet.private_key);
+  const senderPublicKey = assertWalletMatchesPrivateKey(wallet, privateKey);
+  const payload = transactionPayload(wallet.name, recipient, 0, senderPublicKey, assetOperation);
+  const signature = ed25519.sign(new TextEncoder().encode(payload), privateKey);
+
+  return {
+    sender: wallet.name,
+    recipient,
+    amount: 0,
+    sender_public_key: senderPublicKey,
+    signature: bytesToHex(signature),
+    asset_operation: assetOperation
+  };
+}
+
+export function normalizeCoinSymbol(symbol) {
+  const value = `${symbol}`.trim().toUpperCase();
+  if (!/^[A-Z0-9]{2,12}$/.test(value)) {
+    throw new Error('coin symbol must be 2 to 12 letters or numbers');
+  }
+
+  return value;
+}
+
+export function normalizeAssetName(name) {
+  const value = `${name}`.trim();
+  if (!value || value.length > 64) {
+    throw new Error('asset name must be 1 to 64 characters');
+  }
+
+  return value;
+}
+
+export function normalizeTokenId(tokenId) {
+  const value = `${tokenId}`.trim().toLowerCase();
+  if (!/^[a-z0-9_-]{1,64}$/.test(value)) {
+    throw new Error('NFT token id must be 1 to 64 letters, numbers, hyphens, or underscores');
+  }
+
+  return value;
+}
+
+export function normalizeTokenAmount(amount, label = 'amount') {
+  const numeric = Number(amount);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    throw new Error(`${label} must be a positive finite number`);
+  }
+
+  if (Math.round(numeric * 100_000_000) / 100_000_000 !== numeric) {
+    throw new Error(`${label} can have at most 8 decimal places`);
+  }
+
+  return numeric;
 }
 
 export function createSignedTransaction(wallet, recipient, amount) {
@@ -71,10 +180,7 @@ export function createSignedTransaction(wallet, recipient, amount) {
   }
 
   const privateKey = hexToBytes(wallet.private_key);
-  const senderPublicKey = bytesToHex(ed25519.getPublicKey(privateKey));
-  if (senderPublicKey !== wallet.public_key) {
-    throw new Error('wallet public key does not match its private key');
-  }
+  const senderPublicKey = assertWalletMatchesPrivateKey(wallet, privateKey);
 
   const payload = transactionPayload(wallet.name, recipient, numericAmount, senderPublicKey);
   const signature = ed25519.sign(new TextEncoder().encode(payload), privateKey);
@@ -86,6 +192,68 @@ export function createSignedTransaction(wallet, recipient, amount) {
     sender_public_key: senderPublicKey,
     signature: bytesToHex(signature)
   };
+}
+
+export function createCoinTransaction(wallet, { symbol, name, supply }) {
+  const senderPublicKey = wallet.public_key;
+  const assetOperation = {
+    CreateCoin: {
+      symbol: normalizeCoinSymbol(symbol),
+      name: normalizeAssetName(name),
+      supply: normalizeTokenAmount(supply, 'coin supply')
+    }
+  };
+
+  return createSignedAssetTransaction(wallet, senderPublicKey, assetOperation);
+}
+
+export function createCoinTransferTransaction(wallet, { recipient, symbol, amount }) {
+  if (!recipient) {
+    throw new Error('coin transfer requires a recipient public key');
+  }
+
+  const assetOperation = {
+    TransferCoin: {
+      symbol: normalizeCoinSymbol(symbol),
+      amount: normalizeTokenAmount(amount, 'coin transfer amount')
+    }
+  };
+
+  return createSignedAssetTransaction(wallet, recipient, assetOperation);
+}
+
+export function createNftMintTransaction(wallet, { collection, tokenId, name, imageUrl = null }) {
+  const senderPublicKey = wallet.public_key;
+  const mint = {
+    collection: normalizeCoinSymbol(collection),
+    token_id: normalizeTokenId(tokenId),
+    name: normalizeAssetName(name)
+  };
+
+  if (imageUrl) {
+    const value = `${imageUrl}`.trim();
+    if (value.length > 512 || !/^https?:\/\//i.test(value)) {
+      throw new Error('NFT image URL must start with http:// or https:// and be at most 512 characters');
+    }
+    mint.image_url = value;
+  }
+
+  return createSignedAssetTransaction(wallet, senderPublicKey, { MintNft: mint });
+}
+
+export function createNftTransferTransaction(wallet, { recipient, collection, tokenId }) {
+  if (!recipient) {
+    throw new Error('NFT transfer requires a recipient public key');
+  }
+
+  const assetOperation = {
+    TransferNft: {
+      collection: normalizeCoinSymbol(collection),
+      token_id: normalizeTokenId(tokenId)
+    }
+  };
+
+  return createSignedAssetTransaction(wallet, recipient, assetOperation);
 }
 
 export function transactionId(transaction) {
@@ -230,12 +398,115 @@ export function calculateBalances(chain) {
     }
 
     for (const transaction of transactions) {
+      if (transaction.asset_operation) {
+        continue;
+      }
       debit(transaction.sender_public_key, transaction.amount);
       credit(transaction.recipient, transaction.amount);
     }
   }
 
   return balances;
+}
+
+export function calculateAssets(chain) {
+  const coins = new Map();
+  const nfts = new Map();
+
+  const ensureCoin = (symbol, name = symbol, supply = 0) => {
+    if (!coins.has(symbol)) {
+      coins.set(symbol, { symbol, name, supply, holders: new Map() });
+    }
+    return coins.get(symbol);
+  };
+
+  const addBalance = (symbol, address, amount) => {
+    const coin = ensureCoin(symbol);
+    coin.holders.set(address, (coin.holders.get(address) ?? 0) + amount);
+  };
+
+  for (const block of chain.chain.slice(1)) {
+    for (const transaction of block.transactions.slice(1)) {
+      const operation = transaction.asset_operation;
+      if (!operation) {
+        continue;
+      }
+
+      if (operation.CreateCoin) {
+        const coin = operation.CreateCoin;
+        const symbol = normalizeCoinSymbol(coin.symbol);
+        const record = ensureCoin(symbol, coin.name, coin.supply);
+        record.creator = transaction.sender_public_key;
+        addBalance(symbol, transaction.sender_public_key, coin.supply);
+      } else if (operation.TransferCoin) {
+        const transfer = operation.TransferCoin;
+        const symbol = normalizeCoinSymbol(transfer.symbol);
+        addBalance(symbol, transaction.sender_public_key, -transfer.amount);
+        addBalance(symbol, transaction.recipient, transfer.amount);
+      } else if (operation.MintNft) {
+        const nft = operation.MintNft;
+        const collection = normalizeCoinSymbol(nft.collection);
+        const tokenId = normalizeTokenId(nft.token_id);
+        nfts.set(`${collection}:${tokenId}`, {
+          collection,
+          tokenId,
+          name: nft.name,
+          imageUrl: nft.image_url ?? null,
+          creator: transaction.sender_public_key,
+          owner: transaction.sender_public_key
+        });
+      } else if (operation.TransferNft) {
+        const transfer = operation.TransferNft;
+        const key = `${normalizeCoinSymbol(transfer.collection)}:${normalizeTokenId(transfer.token_id)}`;
+        const nft = nfts.get(key);
+        if (nft) {
+          nft.owner = transaction.recipient;
+        }
+      }
+    }
+  }
+
+  return {
+    coins: [...coins.values()].map((coin) => ({
+      ...coin,
+      creator: coin.creator ?? null,
+      holders: [...coin.holders.entries()]
+        .map(([address, balance]) => ({ address, balance }))
+        .filter((holder) => Math.abs(holder.balance) > 0.00000001)
+        .sort((left, right) => right.balance - left.balance)
+    })),
+    nfts: [...nfts.values()].sort((left, right) =>
+      `${left.collection}:${left.tokenId}`.localeCompare(`${right.collection}:${right.tokenId}`)
+    )
+  };
+}
+
+export function listCoinsCreatedBy(chain, addressOrWallet) {
+  const address = typeof addressOrWallet === 'string' ? addressOrWallet : addressOrWallet.public_key;
+  return calculateAssets(chain).coins.filter((coin) => coin.creator === address);
+}
+
+export function listNftsCreatedBy(chain, addressOrWallet) {
+  const address = typeof addressOrWallet === 'string' ? addressOrWallet : addressOrWallet.public_key;
+  return calculateAssets(chain).nfts.filter((nft) => nft.creator === address);
+}
+
+export function listNftsOwnedBy(chain, addressOrWallet) {
+  const address = typeof addressOrWallet === 'string' ? addressOrWallet : addressOrWallet.public_key;
+  return calculateAssets(chain).nfts.filter((nft) => nft.owner === address);
+}
+
+export function listCoinHoldings(chain, addressOrWallet) {
+  const address = typeof addressOrWallet === 'string' ? addressOrWallet : addressOrWallet.public_key;
+  return calculateAssets(chain).coins
+    .map((coin) => ({
+      symbol: coin.symbol,
+      name: coin.name,
+      supply: coin.supply,
+      creator: coin.creator,
+      balance: coin.holders.find((holder) => holder.address === address)?.balance ?? 0
+    }))
+    .filter((coin) => Math.abs(coin.balance) > 0.00000001);
 }
 
 export async function getBalance(addressOrWallet, seedPeers = DEFAULT_PEERS) {
@@ -248,6 +519,50 @@ export async function getBalance(addressOrWallet, seedPeers = DEFAULT_PEERS) {
     balance: balances.get(address) ?? 0,
     blockHeight: chain.chain.at(-1)?.index ?? 0,
     circulatingSupply: chain.circulating_supply,
+    sourcePeer,
+    peers
+  };
+}
+
+export async function getCreatedCoins(addressOrWallet, seedPeers = DEFAULT_PEERS) {
+  const { chain, sourcePeer, peers } = await getBestChain(seedPeers);
+  return {
+    address: typeof addressOrWallet === 'string' ? addressOrWallet : addressOrWallet.public_key,
+    coins: listCoinsCreatedBy(chain, addressOrWallet),
+    blockHeight: chain.chain.at(-1)?.index ?? 0,
+    sourcePeer,
+    peers
+  };
+}
+
+export async function getCreatedNfts(addressOrWallet, seedPeers = DEFAULT_PEERS) {
+  const { chain, sourcePeer, peers } = await getBestChain(seedPeers);
+  return {
+    address: typeof addressOrWallet === 'string' ? addressOrWallet : addressOrWallet.public_key,
+    nfts: listNftsCreatedBy(chain, addressOrWallet),
+    blockHeight: chain.chain.at(-1)?.index ?? 0,
+    sourcePeer,
+    peers
+  };
+}
+
+export async function getOwnedNfts(addressOrWallet, seedPeers = DEFAULT_PEERS) {
+  const { chain, sourcePeer, peers } = await getBestChain(seedPeers);
+  return {
+    address: typeof addressOrWallet === 'string' ? addressOrWallet : addressOrWallet.public_key,
+    nfts: listNftsOwnedBy(chain, addressOrWallet),
+    blockHeight: chain.chain.at(-1)?.index ?? 0,
+    sourcePeer,
+    peers
+  };
+}
+
+export async function getCoinHoldings(addressOrWallet, seedPeers = DEFAULT_PEERS) {
+  const { chain, sourcePeer, peers } = await getBestChain(seedPeers);
+  return {
+    address: typeof addressOrWallet === 'string' ? addressOrWallet : addressOrWallet.public_key,
+    coins: listCoinHoldings(chain, addressOrWallet),
+    blockHeight: chain.chain.at(-1)?.index ?? 0,
     sourcePeer,
     peers
   };
@@ -268,6 +583,38 @@ export async function broadcastTransaction(transaction, seedPeers = DEFAULT_PEER
 
 export async function sendTransaction({ wallet, recipient, amount, peers = DEFAULT_PEERS }) {
   const transaction = createSignedTransaction(wallet, recipient, amount);
+  return {
+    transaction,
+    ...(await broadcastTransaction(transaction, peers))
+  };
+}
+
+export async function createCoin({ wallet, symbol, name, supply, peers = DEFAULT_PEERS }) {
+  const transaction = createCoinTransaction(wallet, { symbol, name, supply });
+  return {
+    transaction,
+    ...(await broadcastTransaction(transaction, peers))
+  };
+}
+
+export async function sendCoin({ wallet, recipient, symbol, amount, peers = DEFAULT_PEERS }) {
+  const transaction = createCoinTransferTransaction(wallet, { recipient, symbol, amount });
+  return {
+    transaction,
+    ...(await broadcastTransaction(transaction, peers))
+  };
+}
+
+export async function mintNft({ wallet, collection, tokenId, name, imageUrl = null, peers = DEFAULT_PEERS }) {
+  const transaction = createNftMintTransaction(wallet, { collection, tokenId, name, imageUrl });
+  return {
+    transaction,
+    ...(await broadcastTransaction(transaction, peers))
+  };
+}
+
+export async function transferNft({ wallet, recipient, collection, tokenId, peers = DEFAULT_PEERS }) {
+  const transaction = createNftTransferTransaction(wallet, { recipient, collection, tokenId });
   return {
     transaction,
     ...(await broadcastTransaction(transaction, peers))
