@@ -10,3 +10,10 @@ dist/
 .angular/
 .npm-cache/
 .npm-global/
+*.env
+.firebaserc
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+xyqon-dashboard/src/environments/firebase-config.local.ts

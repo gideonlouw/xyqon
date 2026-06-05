@@ -386,7 +386,7 @@ async function sendJson(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
-async function handleRequest(request, response) {
+export async function handleRequest(request, response) {
   const url = new URL(request.url, 'http://127.0.0.1');
   const path = normalizeApiPath(url.pathname);
   if (path === '/api/dashboard') {
@@ -448,10 +448,12 @@ function normalizeApiPath(pathname) {
   return pathname.replace(/^\/api\/api(?=\/|$)/, '/api');
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}
 
 async function main() {
   if (process.argv.includes('--once')) {

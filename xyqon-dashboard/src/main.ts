@@ -1,7 +1,13 @@
 import { Component, computed, inject, signal } from '@angular/core';
 import { bootstrapApplication } from '@angular/platform-browser';
-import { DecimalPipe, DatePipe, NgClass } from '@angular/common';
+import { CurrencyPipe, DatePipe, DecimalPipe, NgClass } from '@angular/common';
 import { HttpClient, provideHttpClient } from '@angular/common/http';
+import { initializeApp } from 'firebase/app';
+import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
+import { doc, getFirestore, serverTimestamp, setDoc } from 'firebase/firestore';
+import type { Auth } from 'firebase/auth';
+import type { DocumentReference, Firestore } from 'firebase/firestore';
+import { dashboardApiBaseUrl, firebaseConfig } from './environments/firebase-config';
 
 type Transaction = {
   sender: string;
@@ -92,271 +98,602 @@ type DashboardResponse = {
   recentTransactions: ExplorerTransaction[];
 };
 
+type FirebaseUser = {
+  uid: string;
+  displayName: string | null;
+  email: string | null;
+  photoURL: string | null;
+};
+
+type FirebaseRuntime = {
+  auth: Auth;
+  db: Firestore;
+  GoogleAuthProvider: typeof GoogleAuthProvider;
+  onAuthStateChanged: (auth: Auth, callback: (user: FirebaseUser | null) => void) => void;
+  signInWithPopup: (auth: Auth, provider: InstanceType<typeof GoogleAuthProvider>) => Promise<{ user: FirebaseUser }>;
+  signOut: (auth: Auth) => Promise<void>;
+  doc: (db: Firestore, collectionName: string, documentId: string) => DocumentReference;
+  setDoc: (reference: DocumentReference, data: Record<string, unknown>, options: { merge: boolean }) => Promise<void>;
+  serverTimestamp: () => unknown;
+};
+
+type Page = 'home' | 'dashboard' | 'explorer' | 'community' | 'developers' | 'clothing';
+
+type ClothingProduct = {
+  id: string;
+  name: string;
+  category: string;
+  priceUsd: number;
+  mockupClass: string;
+};
+
+type ClothingSize = 'S' | 'M' | 'L' | 'XL' | 'XXL';
+
+type ClothingOrderDraft = {
+  size: ClothingSize;
+  transactionHash: string;
+  deliveryAddress: string;
+};
+
+const firebaseRuntime = loadFirebaseRuntime();
+
 @Component({
   selector: 'app-root',
-  imports: [DecimalPipe, DatePipe, NgClass],
+  imports: [CurrencyPipe, DecimalPipe, DatePipe, NgClass],
   template: `
-    <main class="shell">
-      <header class="topbar">
-        <div>
-          <p class="eyebrow">XYQON Network</p>
-          <h1>Live Node Dashboard</h1>
+    <main class="app-shell">
+      <nav class="site-nav" aria-label="Primary">
+        <a href="/" class="brand" (click)="navigate($event, 'home')">
+          <span class="brand-mark"><img src="/assets/xyqon-logo-small.png" alt="" /></span>
+          <span>Xyqon</span>
+        </a>
+        <div class="nav-links">
+          <a href="/dashboard" (click)="navigate($event, 'dashboard')">Dashboard</a>
+          <a href="/explorer" (click)="navigate($event, 'explorer')">Block Explorer</a>
+          <a href="/developers" (click)="navigate($event, 'developers')">Developers</a>
+          <a href="/clothing" (click)="navigate($event, 'clothing')">Clothing</a>
+          <a href="/community" (click)="navigate($event, 'community')">Community</a>
         </div>
-        <button type="button" class="refresh" (click)="load()" [disabled]="loading()">
-          {{ loading() ? 'Refreshing' : 'Refresh' }}
-        </button>
-      </header>
+      </nav>
 
-      @if (error()) {
-        <section class="notice">{{ error() }}</section>
+      @if (page() === 'home') {
+        <section class="landing-grid">
+          <div class="landing-copy">
+            <img class="landing-logo" src="/assets/xyqon-logo.png" alt="Xyqon logo" />
+            <p class="eyebrow">XYQON Network</p>
+            <h1>Xyqon is a community-built blockchain project for open network participation.</h1>
+            <p>
+              Follow live nodes, inspect recent blocks, explore public addresses, and join the community
+              that helps test, improve, and grow the project.
+            </p>
+            <div class="hero-actions">
+              <a class="primary-action" href="/dashboard" (click)="navigate($event, 'dashboard')">View Nodes Dashboard</a>
+              <a class="secondary-action" href="/explorer" (click)="navigate($event, 'explorer')">Open Block Explorer</a>
+            </div>
+          </div>
+          <aside class="network-card" aria-label="Network snapshot">
+            <span>Current Network</span>
+            @if (dashboard(); as data) {
+              <strong>{{ data.chain.blockHeight | number }}</strong>
+              <p>latest block height</p>
+              <div class="snapshot-row">
+                <span>Online nodes</span>
+                <b>{{ onlineNodes() }} / {{ data.nodes.length }}</b>
+              </div>
+              <div class="snapshot-row">
+                <span>Known addresses</span>
+                <b>{{ data.publicAddresses.length | number }}</b>
+              </div>
+            } @else {
+              <strong>Live</strong>
+              <p>loading network snapshot</p>
+            }
+          </aside>
+        </section>
+
+        <section class="public-links" aria-label="Public project links">
+          <article>
+            <h2>Live Dashboard</h2>
+            <p>See public node health, block height, circulating supply, recent blocks, coins, NFTs, and rich-list data.</p>
+            <a href="/dashboard" (click)="navigate($event, 'dashboard')">View dashboard</a>
+          </article>
+          <article>
+            <h2>Block Explorer</h2>
+            <p>Search the current chain by public address, block height, block hash, or transaction id without signing in.</p>
+            <a href="/explorer" (click)="navigate($event, 'explorer')">Search explorer</a>
+          </article>
+          <article>
+            <h2>Community</h2>
+            <p>Sign in with Google to register as a Xyqon community member and share how you want to contribute.</p>
+            <a href="/community" (click)="navigate($event, 'community')">Join community</a>
+          </article>
+          <article>
+            <h2>Clothing</h2>
+            <p>Preview Xyqon branded hoodies and T-shirts, choose your size, and pay with USDT.</p>
+            <a href="/clothing" (click)="navigate($event, 'clothing')">View clothing</a>
+          </article>
+        </section>
+
+        <section class="node-callout" aria-label="Run a Xyqon node">
+          <div class="section-head">
+            <p class="eyebrow">RUN A NODE</p>
+            <h2>Help secure and grow the XYQON network.</h2>
+            <p>
+              XYQON is a Rust blockchain node built for public peer participation, mining rewards,
+              and live chain synchronization.
+            </p>
+          </div>
+          <div class="node-grid">
+            <ul>
+              <li>Proof-of-work blocks</li>
+              <li>Signed Ed25519 transactions</li>
+              <li>Coinbase mining rewards</li>
+              <li>67 million maximum coin supply</li>
+              <li>60-second rolling-window difficulty target</li>
+            </ul>
+            <ul>
+              <li>Persistent mempool for pending signed transactions</li>
+              <li>Chain sync for late-joining peers</li>
+              <li>Peer discovery through shared lists and announcements</li>
+              <li>Fork resolution using accumulated work</li>
+              <li>Balance validation to reject overspending</li>
+              <li>TCP peer-to-peer block and transaction sharing</li>
+            </ul>
+          </div>
+          <a class="primary-action" href="https://github.com/gideonlouw/xyqon#run-a-miner" target="_blank" rel="noopener">
+            View Mining Guide
+          </a>
+        </section>
+
       }
 
-      @if (dashboard(); as data) {
-        <section class="metrics" aria-label="Network summary">
+      @if (page() === 'developers') {
+        <section class="page-intro">
+          <p class="eyebrow">DEVELOPERS</p>
+          <h1>Build applications, coins, and NFTs on top of the XYQON network.</h1>
+          <p>Use the JavaScript client to create wallets, submit signed transactions, read balances, and build community tools around public nodes.</p>
+        </section>
+        <section class="developers" id="developers">
+          <div class="developer-grid">
+            <article>
+              <span>Install</span>
+              <code>npm install xyqon</code>
+              <p>Use the JavaScript client in Node.js apps, tools, games, marketplaces, and community experiments.</p>
+            </article>
+            <article>
+              <span>Applications</span>
+              <code>import {{ '{' }} createWallet, getBalance, sendTransaction {{ '}' }} from 'xyqon';</code>
+              <p>Create wallets, read live balances from public nodes, and sign transactions from your own app logic.</p>
+            </article>
+            <article>
+              <span>Coins</span>
+              <code>await createCoin({{ '{' }} wallet, symbol: 'GAME', name: 'Game Coin', supply: 1000000 {{ '}' }});</code>
+              <p>Launch project tokens, then transfer balances between XYQON public keys after they are mined on-chain.</p>
+            </article>
+            <article>
+              <span>NFTs</span>
+              <code>await mintNft({{ '{' }} wallet, collection: 'ITEMS', tokenId: 'sword-001', name: 'Iron Sword' {{ '}' }});</code>
+              <p>Mint collectibles, game items, art, or membership badges and transfer ownership through signed transactions.</p>
+            </article>
+          </div>
+        </section>
+      }
+
+      @if (page() === 'clothing') {
+        <section class="page-intro shop-intro">
+          <div>
+            <p class="eyebrow">XYQON CLOTHING</p>
+            <h1>Wear the network.</h1>
+            <p>Choose your item and size, then send one USDT payment for the item plus delivery to the address below.</p>
+          </div>
+          <aside class="payment-card">
+            <span>USDT payment address</span>
+            <strong class="mono wrap">{{ usdtAddress }}</strong>
+            <p>Please include the clothing price and delivery fee together in the same payment.</p>
+            <p>After payment, submit your delivery address and transaction hash with the item below.</p>
+          </aside>
+        </section>
+
+        <section class="shop-summary" aria-label="Pricing">
           <article>
-            <span>Block Height</span>
-            <strong>{{ data.chain.blockHeight | number }}</strong>
+            <span>Hooded sweaters</span>
+            <strong>{{ hoodiePriceUsd | currency:'USD':'symbol':'1.2-2' }}</strong>
           </article>
           <article>
-            <span>Circulating Supply</span>
-            <strong>{{ data.chain.circulatingSupply | number:'1.0-8' }}</strong>
+            <span>T-shirts</span>
+            <strong>{{ tshirtPriceUsd | currency:'USD':'symbol':'1.2-2' }}</strong>
           </article>
           <article>
-            <span>Online Nodes</span>
-            <strong>{{ onlineNodes() }} / {{ data.nodes.length }}</strong>
-          </article>
-          <article>
-            <span>Known Addresses</span>
-            <strong>{{ data.publicAddresses.length | number }}</strong>
-          </article>
-          <article>
-            <span>Coins</span>
-            <strong>{{ data.coins.length | number }}</strong>
-          </article>
-          <article>
-            <span>NFTs</span>
-            <strong>{{ data.nfts.length | number }}</strong>
+            <span>Delivery</span>
+            <strong>{{ deliveryUsd | currency:'USD':'symbol':'1.2-2' }}</strong>
           </article>
         </section>
 
-        <section class="grid two">
-          <div class="panel">
-            <div class="panel-head">
-              <h2>Live Nodes</h2>
-              <span>Source: {{ data.sourceNode || 'none' }}</span>
-            </div>
-            <div class="table">
-              <div class="row header">
-                <span>Node</span>
-                <span>Status</span>
-                <span>Height</span>
-                <span>Latency</span>
-              </div>
-              @for (node of data.nodes; track node.address) {
-                <div class="row">
-                  <span class="mono">{{ node.address }}</span>
-                  <span>
-                    <i [ngClass]="node.online ? 'up' : 'down'"></i>
-                    {{ node.online ? 'Online' : 'Offline' }}
-                  </span>
-                  <span>{{ node.blockHeight ?? '-' }}</span>
-                  <span>{{ node.latencyMs === null ? '-' : node.latencyMs + ' ms' }}</span>
+        <section class="product-grid" aria-label="Xyqon clothing products">
+          @for (product of clothingProducts; track product.id) {
+            <article class="product-card">
+              <div class="product-art" [ngClass]="product.mockupClass">
+                <div class="garment">
+                  @if (product.category === 'Hooded sweater') {
+                    <span class="hoodie-strings"></span>
+                    <span class="hoodie-pocket"></span>
+                  }
+                  <img src="/assets/xyqon-logo.png" alt="Xyqon logo" />
                 </div>
-              }
-            </div>
-          </div>
-
-          <div class="panel">
-            <div class="panel-head">
-              <h2>Recent Blocks</h2>
-              <span>{{ data.generatedAt | date:'medium' }}</span>
-            </div>
-            <div class="blocks">
-              @for (block of data.recentBlocks; track block.hash) {
-                <article>
-                  <div>
-                    <strong>#{{ block.index }}</strong>
-                    <span>{{ block.transactions.length }} tx</span>
+              </div>
+              <div class="product-info">
+                <span>{{ product.category }}</span>
+                <h2>{{ product.name }}</h2>
+                <strong>{{ product.priceUsd | currency:'USD':'symbol':'1.2-2' }}</strong>
+                <p class="total-note">
+                  Pay {{ product.priceUsd + deliveryUsd | currency:'USD':'symbol':'1.2-2' }} total including delivery.
+                </p>
+                <div class="size-picker" aria-label="Select size">
+                  @for (size of clothingSizes; track size) {
+                    <button
+                      type="button"
+                      [class.selected]="selectedSize(product.id) === size"
+                      (click)="selectSize(product.id, size)"
+                    >
+                      {{ size }}
+                    </button>
+                  }
+                </div>
+                <p>Selected size: <b>{{ selectedSize(product.id) }}</b></p>
+                @if (user()) {
+                  <form class="order-form" (submit)="submitClothingOrder($event, product)">
+                    <label>
+                      Transaction hash
+                      <input
+                        type="text"
+                        placeholder="Paste your USDT transaction hash"
+                        [value]="orderDraft(product.id).transactionHash"
+                        (input)="updateOrderField(product.id, 'transactionHash', $any($event.target).value)"
+                      >
+                    </label>
+                    <label>
+                      Delivery address
+                      <textarea
+                        rows="3"
+                        placeholder="Name, phone number, street address, city, postal code"
+                        [value]="orderDraft(product.id).deliveryAddress"
+                        (input)="updateOrderField(product.id, 'deliveryAddress', $any($event.target).value)"
+                      ></textarea>
+                    </label>
+                    <button type="submit" class="primary-action" [disabled]="orderBusy()">
+                      {{ orderBusy() ? 'Saving...' : 'Submit Order' }}
+                    </button>
+                  </form>
+                } @else {
+                  <div class="signin-required">
+                    <p>Sign in with Google to submit clothing orders and delivery details.</p>
+                    <button type="button" class="primary-action" (click)="joinWithGoogle()" [disabled]="authBusy()">
+                      {{ authBusy() ? 'Opening Google...' : 'Sign In To Order' }}
+                    </button>
                   </div>
-                  <p class="mono">{{ block.hash }}</p>
-                </article>
-              }
-            </div>
-          </div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-head">
-            <h2>Explorer</h2>
-            <span>Search by address, block height, block hash, or transaction id</span>
-          </div>
-          <div class="searchbar">
-            <input
-              type="search"
-              placeholder="Paste address, block, or transaction"
-              [value]="query()"
-              (input)="query.set($any($event.target).value)"
-            >
-          </div>
-          @if (query().trim()) {
-            <div class="explorer-result">
-              @if (matchedAddress(); as address) {
-                <article>
-                  <span>Address</span>
-                  <p class="mono wrap">{{ address.address }}</p>
-                  <strong>{{ address.balance | number:'1.0-8' }} XYQON</strong>
-                </article>
-              }
-              @if (matchedBlock(); as block) {
-                <article>
-                  <span>Block</span>
-                  <p>#{{ block.index }} · {{ block.transactions.length }} transactions</p>
-                  <strong class="mono wrap">{{ block.hash }}</strong>
-                </article>
-              }
-              @if (matchedTransaction(); as transaction) {
-                <article>
-                  <span>Transaction</span>
-                  <p>{{ transactionLabel(transaction) }} in block #{{ transaction.blockIndex }}</p>
-                  <strong class="mono wrap">{{ transaction.id }}</strong>
-                </article>
-              }
-              @if (!matchedAddress() && !matchedBlock() && !matchedTransaction()) {
-                <article>
-                  <span>No Match</span>
-                  <p>Nothing in the current chain matches that value.</p>
-                </article>
-              }
-            </div>
+                }
+              </div>
+            </article>
           }
         </section>
-
-        <section class="grid two assets-grid">
-          <div class="panel">
-            <div class="panel-head">
-              <h2>Network Coins</h2>
-              <span>{{ data.coins.length }} active symbols</span>
-            </div>
-            <div class="coin-list">
-              @for (coin of data.coins; track coin.symbol) {
-                <article>
-                  <div class="asset-title">
-                    <div>
-                      <strong>{{ coin.symbol }}</strong>
-                      <span>{{ coin.name }}</span>
-                    </div>
-                    <em>{{ coin.supply | number:'1.0-8' }}</em>
-                  </div>
-                  <div class="holders">
-                    @for (holder of coin.holders.slice(0, 4); track holder.address) {
-                      <p>
-                        <span class="mono wrap">{{ holder.address }}</span>
-                        <strong>{{ holder.balance | number:'1.0-8' }}</strong>
-                      </p>
-                    }
-                    @if (!coin.holders.length) {
-                      <p><span>No holders yet</span></p>
-                    }
-                  </div>
-                </article>
-              }
-              @if (!data.coins.length) {
-                <article class="empty-asset">No coins have been mined into the current chain yet.</article>
-              }
-            </div>
+        @if (orderMessage()) {
+          <div class="order-popup-backdrop" role="presentation">
+            <section class="order-popup" role="alertdialog" aria-live="polite" aria-label="Clothing order message">
+              <span>Clothing order</span>
+              <p>{{ orderMessage() }}</p>
+              <button type="button" class="primary-action" (click)="orderMessage.set(null)">Close</button>
+            </section>
           </div>
+        }
+      }
 
-          <div class="panel">
-            <div class="panel-head">
-              <h2>NFT Owners</h2>
-              <span>{{ data.nfts.length }} minted NFTs</span>
-            </div>
-            <div class="nft-list">
-              @for (nft of data.nfts; track nft.collection + ':' + nft.tokenId) {
-                <article [class.no-image]="!nft.imageUrl">
-                  @if (nft.imageUrl) {
-                    <img [src]="nft.imageUrl" [alt]="nft.name" loading="lazy">
-                  }
-                  <div>
-                    <strong>{{ nft.collection }}:{{ nft.tokenId }}</strong>
-                    <span>{{ nft.name }}</span>
-                    <p class="mono wrap">{{ nft.owner }}</p>
-                  </div>
-                </article>
+      @if (page() === 'community') {
+        <section class="community-layout">
+          <div>
+            <p class="eyebrow">Xyqon Community</p>
+            <h1>Join the builders, testers, node operators, and early supporters around Xyqon.</h1>
+            <p>
+              Google sign-in creates your community member entry so the project can keep track
+              of people who want to help with testing, docs, nodes, explorer feedback, and ecosystem ideas.
+            </p>
+            <div class="hero-actions">
+              @if (user(); as activeUser) {
+                <button type="button" class="primary-action" (click)="registerMember()" [disabled]="authBusy()">
+                  {{ authBusy() ? 'Saving...' : 'Sync Profile' }}
+                </button>
+                <button type="button" class="secondary-action" (click)="leave()" [disabled]="authBusy()">Sign Out</button>
+              } @else {
+                <button type="button" class="primary-action" (click)="joinWithGoogle()" [disabled]="authBusy()">
+                  {{ authBusy() ? 'Opening Google...' : 'Sign In With Google' }}
+                </button>
               }
-              @if (!data.nfts.length) {
-                <article class="empty-asset">No NFTs have been mined into the current chain yet.</article>
-              }
             </div>
-          </div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-head">
-            <h2>Recent Transactions</h2>
-            <span>{{ data.recentTransactions.length }} latest entries</span>
-          </div>
-          <div class="table transactions">
-            <div class="row header">
-              <span>Type</span>
-              <span>Block</span>
-              <span>Recipient</span>
-              <span>Amount</span>
-            </div>
-            @for (transaction of data.recentTransactions; track transaction.id) {
-              <div class="row">
-                <span>{{ transactionType(transaction) }}</span>
-                <span>#{{ transaction.blockIndex }}</span>
-                <span class="mono wrap">{{ transaction.recipient }}</span>
-                <span>{{ transactionLabel(transaction) }}</span>
-              </div>
+            @if (communityMessage()) {
+              <p class="community-message">{{ communityMessage() }}</p>
             }
           </div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-head">
-            <h2>Rich List</h2>
-            <span>Top balances from the current chain</span>
-          </div>
-          <div class="table addresses">
-            <div class="row header">
-              <span>Rank</span>
-              <span>Public Address</span>
-              <span>Balance</span>
-              <span>Mined</span>
-              <span>Sent</span>
-              <span>Received</span>
-            </div>
-            @for (address of data.richList; track address.address; let index = $index) {
-              <div class="row">
-                <span>{{ index + 1 }}</span>
-                <span class="mono wrap">{{ address.address }}</span>
-                <span>{{ address.balance | number:'1.0-8' }}</span>
-                <span>{{ address.mined | number:'1.0-8' }}</span>
-                <span>{{ address.sent | number:'1.0-8' }}</span>
-                <span>{{ address.received | number:'1.0-8' }}</span>
-              </div>
+          <aside class="member-card">
+            @if (user(); as activeUser) {
+              <span>Community profile</span>
+              <strong>{{ activeUser.displayName || 'Community member' }}</strong>
+              <p>{{ activeUser.email }}</p>
+              <div class="member-status">Active member</div>
+              <p>Your profile is connected. Use Sync Profile if your Google name or email changes.</p>
+            } @else {
+              <span>Membership</span>
+              <strong>Google sign-in required</strong>
+              <p>The dashboard and block explorer remain public. Sign-in is only for community contribution records.</p>
             }
-          </div>
+          </aside>
         </section>
+      }
 
-        <section class="panel">
-          <div class="panel-head">
-            <h2>Public Addresses</h2>
-            <span>{{ data.publicAddresses.length }} seen on-chain</span>
+      @if (page() === 'dashboard' || page() === 'explorer') {
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">XYQON Network</p>
+            <h1>{{ page() === 'explorer' ? 'Public Block Explorer' : 'Live Node Dashboard' }}</h1>
           </div>
-          <div class="address-list">
-            @for (address of data.publicAddresses; track address.address) {
+          <button type="button" class="refresh" (click)="load()" [disabled]="loading()">
+            {{ loading() ? 'Refreshing' : 'Refresh' }}
+          </button>
+        </header>
+
+        @if (error()) {
+          <section class="notice">{{ error() }}</section>
+        }
+
+        @if (dashboard(); as data) {
+          @if (page() === 'dashboard') {
+            <section class="metrics" aria-label="Network summary">
               <article>
-                <p class="mono">{{ address.address }}</p>
-                <strong>{{ address.balance | number:'1.0-8' }} XYQON</strong>
+                <span>Block Height</span>
+                <strong>{{ data.chain.blockHeight | number }}</strong>
               </article>
+              <article>
+                <span>Circulating Supply</span>
+                <strong>{{ data.chain.circulatingSupply | number:'1.0-8' }}</strong>
+              </article>
+              <article>
+                <span>Online Nodes</span>
+                <strong>{{ onlineNodes() }} / {{ data.nodes.length }}</strong>
+              </article>
+              <article>
+                <span>Known Addresses</span>
+                <strong>{{ data.publicAddresses.length | number }}</strong>
+              </article>
+              <article>
+                <span>Coins</span>
+                <strong>{{ data.coins.length | number }}</strong>
+              </article>
+              <article>
+                <span>NFTs</span>
+                <strong>{{ data.nfts.length | number }}</strong>
+              </article>
+            </section>
+
+            <section class="grid two">
+              <div class="panel">
+                <div class="panel-head">
+                  <h2>Live Nodes</h2>
+                  <span>Source: {{ data.sourceNode || 'none' }}</span>
+                </div>
+                <div class="table">
+                  <div class="row header">
+                    <span>Node</span>
+                    <span>Status</span>
+                    <span>Height</span>
+                    <span>Latency</span>
+                  </div>
+                  @for (node of data.nodes; track node.address) {
+                    <div class="row">
+                      <span class="mono">{{ node.address }}</span>
+                      <span>
+                        <i [ngClass]="node.online ? 'up' : 'down'"></i>
+                        {{ node.online ? 'Online' : 'Offline' }}
+                      </span>
+                      <span>{{ node.blockHeight ?? '-' }}</span>
+                      <span>{{ node.latencyMs === null ? '-' : node.latencyMs + ' ms' }}</span>
+                    </div>
+                  }
+                </div>
+              </div>
+
+              <div class="panel">
+                <div class="panel-head">
+                  <h2>Recent Blocks</h2>
+                  <span>{{ data.generatedAt | date:'medium' }}</span>
+                </div>
+                <div class="blocks">
+                  @for (block of data.recentBlocks; track block.hash) {
+                    <article>
+                      <div>
+                        <strong>#{{ block.index }}</strong>
+                        <span>{{ block.transactions.length }} tx</span>
+                      </div>
+                      <p class="mono">{{ block.hash }}</p>
+                    </article>
+                  }
+                </div>
+              </div>
+            </section>
+          }
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Explorer</h2>
+              <span>Search by address, block height, block hash, or transaction id</span>
+            </div>
+            <div class="searchbar">
+              <input
+                type="search"
+                placeholder="Paste address, block, or transaction"
+                [value]="query()"
+                (input)="query.set($any($event.target).value)"
+              >
+            </div>
+            @if (query().trim()) {
+              <div class="explorer-result">
+                @if (matchedAddress(); as address) {
+                  <article>
+                    <span>Address</span>
+                    <p class="mono wrap">{{ address.address }}</p>
+                    <strong>{{ address.balance | number:'1.0-8' }} XYQON</strong>
+                  </article>
+                }
+                @if (matchedBlock(); as block) {
+                  <article>
+                    <span>Block</span>
+                    <p>#{{ block.index }} · {{ block.transactions.length }} transactions</p>
+                    <strong class="mono wrap">{{ block.hash }}</strong>
+                  </article>
+                }
+                @if (matchedTransaction(); as transaction) {
+                  <article>
+                    <span>Transaction</span>
+                    <p>{{ transactionLabel(transaction) }} in block #{{ transaction.blockIndex }}</p>
+                    <strong class="mono wrap">{{ transaction.id }}</strong>
+                  </article>
+                }
+                @if (!matchedAddress() && !matchedBlock() && !matchedTransaction()) {
+                  <article>
+                    <span>No Match</span>
+                    <p>Nothing in the current chain matches that value.</p>
+                  </article>
+                }
+              </div>
             }
-          </div>
-        </section>
-      } @else {
-        <section class="loading">Loading network data...</section>
+          </section>
+
+          @if (page() === 'dashboard') {
+            <section class="grid two assets-grid">
+              <div class="panel">
+                <div class="panel-head">
+                  <h2>Network Coins</h2>
+                  <span>{{ data.coins.length }} active symbols</span>
+                </div>
+                <div class="coin-list">
+                  @for (coin of data.coins; track coin.symbol) {
+                    <article>
+                      <div class="asset-title">
+                        <div>
+                          <strong>{{ coin.symbol }}</strong>
+                          <span>{{ coin.name }}</span>
+                        </div>
+                        <em>{{ coin.supply | number:'1.0-8' }}</em>
+                      </div>
+                      <div class="holders">
+                        @for (holder of coin.holders.slice(0, 4); track holder.address) {
+                          <p>
+                            <span class="mono wrap">{{ holder.address }}</span>
+                            <strong>{{ holder.balance | number:'1.0-8' }}</strong>
+                          </p>
+                        }
+                        @if (!coin.holders.length) {
+                          <p><span>No holders yet</span></p>
+                        }
+                      </div>
+                    </article>
+                  }
+                  @if (!data.coins.length) {
+                    <article class="empty-asset">No coins have been mined into the current chain yet.</article>
+                  }
+                </div>
+              </div>
+
+              <div class="panel">
+                <div class="panel-head">
+                  <h2>NFT Owners</h2>
+                  <span>{{ data.nfts.length }} minted NFTs</span>
+                </div>
+                <div class="nft-list">
+                  @for (nft of data.nfts; track nft.collection + ':' + nft.tokenId) {
+                    <article [class.no-image]="!nft.imageUrl">
+                      @if (nft.imageUrl) {
+                        <img [src]="nft.imageUrl" [alt]="nft.name" loading="lazy">
+                      }
+                      <div>
+                        <strong>{{ nft.collection }}:{{ nft.tokenId }}</strong>
+                        <span>{{ nft.name }}</span>
+                        <p class="mono wrap">{{ nft.owner }}</p>
+                      </div>
+                    </article>
+                  }
+                  @if (!data.nfts.length) {
+                    <article class="empty-asset">No NFTs have been mined into the current chain yet.</article>
+                  }
+                </div>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Recent Transactions</h2>
+                <span>{{ data.recentTransactions.length }} latest entries</span>
+              </div>
+              <div class="table transactions">
+                <div class="row header">
+                  <span>Type</span>
+                  <span>Block</span>
+                  <span>Recipient</span>
+                  <span>Amount</span>
+                </div>
+                @for (transaction of data.recentTransactions; track transaction.id) {
+                  <div class="row">
+                    <span>{{ transactionType(transaction) }}</span>
+                    <span>#{{ transaction.blockIndex }}</span>
+                    <span class="mono wrap">{{ transaction.recipient }}</span>
+                    <span>{{ transactionLabel(transaction) }}</span>
+                  </div>
+                }
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Rich List</h2>
+                <span>Top balances from the current chain</span>
+              </div>
+              <div class="table addresses">
+                <div class="row header">
+                  <span>Rank</span>
+                  <span>Public Address</span>
+                  <span>Balance</span>
+                  <span>Mined</span>
+                  <span>Sent</span>
+                  <span>Received</span>
+                </div>
+                @for (address of data.richList; track address.address; let index = $index) {
+                  <div class="row">
+                    <span>{{ index + 1 }}</span>
+                    <span class="mono wrap">{{ address.address }}</span>
+                    <span>{{ address.balance | number:'1.0-8' }}</span>
+                    <span>{{ address.mined | number:'1.0-8' }}</span>
+                    <span>{{ address.sent | number:'1.0-8' }}</span>
+                    <span>{{ address.received | number:'1.0-8' }}</span>
+                  </div>
+                }
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Public Addresses</h2>
+                <span>{{ data.publicAddresses.length }} seen on-chain</span>
+              </div>
+              <div class="address-list">
+                @for (address of data.publicAddresses; track address.address) {
+                  <article>
+                    <p class="mono">{{ address.address }}</p>
+                    <strong>{{ address.balance | number:'1.0-8' }} XYQON</strong>
+                  </article>
+                }
+              </div>
+            </section>
+          }
+        } @else {
+          <section class="loading">Loading network data...</section>
+        }
       }
     </main>
   `
@@ -367,6 +704,28 @@ class App {
   loading = signal(false);
   error = signal<string | null>(null);
   query = signal('');
+  page = signal<Page>(this.routeFromPath());
+  user = signal<FirebaseUser | null>(null);
+  authBusy = signal(false);
+  orderBusy = signal(false);
+  communityMessage = signal<string | null>(null);
+  orderMessage = signal<string | null>(null);
+  readonly exchangeRate = 16.5;
+  readonly usdtAddress = '0x2b7e15382b09f41024ee9a20d2cb7905f8b02785';
+  readonly hoodiePriceUsd = 500 / this.exchangeRate;
+  readonly tshirtPriceUsd = 200 / this.exchangeRate;
+  readonly deliveryUsd = 300 / this.exchangeRate;
+  readonly clothingSizes: ClothingSize[] = ['S', 'M', 'L', 'XL', 'XXL'];
+  readonly clothingProducts: ClothingProduct[] = [
+    { id: 'grey-hoodie', name: 'Grey Xyqon Hoodie', category: 'Hooded sweater', priceUsd: this.hoodiePriceUsd, mockupClass: 'hoodie grey' },
+    { id: 'white-hoodie', name: 'White Xyqon Hoodie', category: 'Hooded sweater', priceUsd: this.hoodiePriceUsd, mockupClass: 'hoodie white' },
+    { id: 'black-hoodie', name: 'Black Xyqon Hoodie', category: 'Hooded sweater', priceUsd: this.hoodiePriceUsd, mockupClass: 'hoodie black' },
+    { id: 'blue-shirt', name: 'Light Blue Xyqon T-Shirt', category: 'T-shirt', priceUsd: this.tshirtPriceUsd, mockupClass: 'shirt sky' },
+    { id: 'white-shirt', name: 'White Xyqon T-Shirt', category: 'T-shirt', priceUsd: this.tshirtPriceUsd, mockupClass: 'shirt white' },
+    { id: 'black-shirt', name: 'Black Xyqon T-Shirt', category: 'T-shirt', priceUsd: this.tshirtPriceUsd, mockupClass: 'shirt black' }
+  ];
+  orderDrafts = signal<Record<string, ClothingOrderDraft>>({});
+
   onlineNodes = computed(() => this.dashboard()?.nodes.filter((node) => node.online).length ?? 0);
   matchedAddress = computed(() => {
     const value = this.query().trim();
@@ -384,6 +743,90 @@ class App {
       ? this.dashboard()?.recentTransactions.find((transaction) => transaction.id === value) ?? null
       : null;
   });
+
+  constructor() {
+    this.load();
+    firebaseRuntime
+      .then((firebase) => firebase.onAuthStateChanged(firebase.auth, (user) => this.user.set(user)))
+      .catch((error) => this.communityMessage.set(this.authError(error)));
+    window.addEventListener('popstate', () => this.page.set(this.routeFromPath()));
+  }
+
+  navigate(event: Event, page: Page) {
+    event.preventDefault();
+    const path = page === 'home' ? '/' : `/${page}`;
+    history.pushState(null, '', path);
+    this.page.set(page);
+  }
+
+  selectedSize(productId: string): ClothingSize {
+    return this.orderDraft(productId).size;
+  }
+
+  selectSize(productId: string, size: ClothingSize) {
+    this.patchOrderDraft(productId, { size });
+  }
+
+  orderDraft(productId: string): ClothingOrderDraft {
+    return this.orderDrafts()[productId] ?? { size: 'M', transactionHash: '', deliveryAddress: '' };
+  }
+
+  updateOrderField(productId: string, field: 'transactionHash' | 'deliveryAddress', value: string) {
+    this.patchOrderDraft(productId, { [field]: value });
+  }
+
+  async submitClothingOrder(event: Event, product: ClothingProduct) {
+    event.preventDefault();
+    const activeUser = this.user();
+    if (!activeUser) {
+      this.orderMessage.set('Please sign in with Google before submitting a clothing order.');
+      return;
+    }
+
+    const draft = this.orderDraft(product.id);
+    const transactionHash = draft.transactionHash.trim();
+    const deliveryAddress = draft.deliveryAddress.trim();
+    if (!transactionHash || !deliveryAddress) {
+      this.orderMessage.set('Please add your transaction hash and delivery address before submitting.');
+      return;
+    }
+
+    this.orderBusy.set(true);
+    this.orderMessage.set(null);
+    try {
+      const firebase = await firebaseRuntime;
+      const orderId = `${activeUser.uid}-${product.id}-${Date.now()}`;
+      await firebase.setDoc(
+        firebase.doc(firebase.db, 'xyqonClothingOrders', orderId),
+        {
+          orderId,
+          uid: activeUser.uid,
+          displayName: activeUser.displayName ?? '',
+          email: activeUser.email ?? '',
+          productId: product.id,
+          productName: product.name,
+          category: product.category,
+          size: draft.size,
+          itemPriceUsd: product.priceUsd,
+          deliveryUsd: this.deliveryUsd,
+          totalUsd: product.priceUsd + this.deliveryUsd,
+          usdtAddress: this.usdtAddress,
+          transactionHash,
+          deliveryAddress,
+          status: 'submitted',
+          createdAt: firebase.serverTimestamp(),
+          updatedAt: firebase.serverTimestamp()
+        },
+        { merge: false }
+      );
+      this.patchOrderDraft(product.id, { transactionHash: '', deliveryAddress: '' });
+      this.orderMessage.set(`Your clothing order was submitted. Order ID: ${orderId}`);
+    } catch (error) {
+      this.orderMessage.set(this.authError(error));
+    } finally {
+      this.orderBusy.set(false);
+    }
+  }
 
   transactionType(transaction: ExplorerTransaction) {
     const operation = transaction.asset_operation;
@@ -422,14 +865,10 @@ class App {
     return `${transaction.amount} XYQON`;
   }
 
-  constructor() {
-    this.load();
-  }
-
   load() {
     this.loading.set(true);
     this.error.set(null);
-    this.http.get<DashboardResponse>('/api/dashboard').subscribe({
+    this.http.get<DashboardResponse>(dashboardApiEndpoint('dashboard')).subscribe({
       next: (dashboard) => {
         this.dashboard.set(dashboard);
         this.loading.set(false);
@@ -440,6 +879,116 @@ class App {
       }
     });
   }
+
+  async joinWithGoogle() {
+    this.authBusy.set(true);
+    this.communityMessage.set(null);
+    try {
+      const firebase = await firebaseRuntime;
+      const credential = await firebase.signInWithPopup(firebase.auth, new firebase.GoogleAuthProvider());
+      await this.saveMember(credential.user);
+      this.communityMessage.set('You are registered as a Xyqon community member.');
+    } catch (error) {
+      this.communityMessage.set(this.authError(error));
+    } finally {
+      this.authBusy.set(false);
+    }
+  }
+
+  async registerMember() {
+    const activeUser = this.user();
+    if (!activeUser) {
+      return;
+    }
+    this.authBusy.set(true);
+    this.communityMessage.set(null);
+    try {
+      await this.saveMember(activeUser);
+      this.communityMessage.set('Your community profile is up to date.');
+    } catch (error) {
+      this.communityMessage.set(this.authError(error));
+    } finally {
+      this.authBusy.set(false);
+    }
+  }
+
+  async leave() {
+    this.authBusy.set(true);
+    this.communityMessage.set(null);
+    try {
+      const firebase = await firebaseRuntime;
+      await firebase.signOut(firebase.auth);
+      this.communityMessage.set('Signed out. The dashboard and explorer are still public.');
+    } catch (error) {
+      this.communityMessage.set(this.authError(error));
+    } finally {
+      this.authBusy.set(false);
+    }
+  }
+
+  private async saveMember(member: FirebaseUser) {
+    const firebase = await firebaseRuntime;
+    await firebase.setDoc(
+      firebase.doc(firebase.db, 'xyqonCommunityMembers', member.uid),
+      {
+        label: 'xyqon community member',
+        uid: member.uid,
+        displayName: member.displayName ?? '',
+        email: member.email ?? '',
+        photoURL: member.photoURL ?? '',
+        provider: 'google',
+        status: 'active',
+        contributionInterest: 'project community',
+        updatedAt: firebase.serverTimestamp(),
+        createdAt: firebase.serverTimestamp()
+      },
+      { merge: true }
+    );
+  }
+
+  private authError(error: unknown) {
+    return error instanceof Error ? error.message : 'Could not complete Google sign-in.';
+  }
+
+  private patchOrderDraft(productId: string, patch: Partial<ClothingOrderDraft>) {
+    const current = this.orderDraft(productId);
+    this.orderDrafts.update((drafts) => ({
+      ...drafts,
+      [productId]: { ...current, ...patch }
+    }));
+  }
+
+  private routeFromPath() {
+    const path = window.location.pathname.replace(/^\/+/, '').split('/')[0];
+    if (path === 'dashboard' || path === 'explorer' || path === 'community' || path === 'developers' || path === 'clothing') {
+      return path;
+    }
+    return 'home';
+  }
+}
+
+function dashboardApiEndpoint(path: string) {
+  const normalizedPath = path.replace(/^\/+/, '');
+  const normalizedBaseUrl = dashboardApiBaseUrl.replace(/\/+$/, '');
+  if (normalizedBaseUrl) {
+    return `${normalizedBaseUrl}/${normalizedPath}`;
+  }
+  return `/api/${normalizedPath}`;
+}
+
+async function loadFirebaseRuntime(): Promise<FirebaseRuntime> {
+  const app = initializeApp(firebaseConfig);
+  return {
+    auth: getAuth(app),
+    db: getFirestore(app),
+    GoogleAuthProvider,
+    onAuthStateChanged,
+    signInWithPopup,
+    signOut,
+    doc,
+    setDoc,
+    serverTimestamp
+  };
 }
 
 bootstrapApplication(App, {
