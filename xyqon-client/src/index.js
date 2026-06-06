@@ -545,6 +545,28 @@ export async function assertSpendableXyqonBalance(wallet, amount, seedPeers = DE
   };
 }
 
+export async function assertSpendableCoinBalance(wallet, symbol, amount, seedPeers = DEFAULT_PEERS) {
+  const normalizedSymbol = normalizeCoinSymbol(symbol);
+  const numericAmount = Number(amount);
+  const { chain, sourcePeer, peers } = await getBestChain(seedPeers);
+  const holding = listCoinHoldings(chain, wallet).find((coin) => coin.symbol === normalizedSymbol);
+  const balance = holding?.balance ?? 0;
+
+  if (balance + XYQON_EPSILON < numericAmount) {
+    throw new Error(
+      `insufficient confirmed ${normalizedSymbol} balance; balance is ${balance}, attempted to spend ${numericAmount}`
+    );
+  }
+
+  return {
+    symbol: normalizedSymbol,
+    balance,
+    blockHeight: chain.chain.at(-1)?.index ?? 0,
+    sourcePeer,
+    peers
+  };
+}
+
 export async function getCreatedCoins(addressOrWallet, seedPeers = DEFAULT_PEERS) {
   const { chain, sourcePeer, peers } = await getBestChain(seedPeers);
   return {
@@ -622,8 +644,15 @@ export async function createCoin({ wallet, symbol, name, supply, peers = DEFAULT
 
 export async function sendCoin({ wallet, recipient, symbol, amount, peers = DEFAULT_PEERS }) {
   const transaction = createCoinTransferTransaction(wallet, { recipient, symbol, amount });
+  const preflight = await assertSpendableCoinBalance(
+    wallet,
+    transaction.asset_operation.TransferCoin.symbol,
+    transaction.asset_operation.TransferCoin.amount,
+    peers
+  );
   return {
     transaction,
+    preflight,
     ...(await broadcastTransaction(transaction, peers))
   };
 }

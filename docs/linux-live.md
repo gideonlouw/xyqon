@@ -189,7 +189,7 @@ xyqon mine \
   --chain /var/lib/xyqon/xyqon-chain.json
 ```
 
-Use the `node` service for always-on relay nodes. Use `mine` only on servers that should compete for block rewards. Miners wait for pending transactions by default; add `--mine-empty` only if you intentionally want reward-only blocks.
+Use the `node` service for always-on relay nodes. Use `mine` only on servers that should compete for block rewards. Miners wait for pending transactions, and mined blocks must include at least one normal transaction.
 
 The mempool is persisted beside the chain by default:
 

@@ -218,7 +218,8 @@ async function run() {
     console.log(`${color('bold', 'Amount:')} ${result.transaction.asset_operation.TransferCoin.amount} ${result.transaction.asset_operation.TransferCoin.symbol}`);
     console.log(`${color('bold', 'To:')} ${result.transaction.recipient}`);
     console.log(`${color('bold', 'Transaction ID:')} ${result.transactionId}`);
-    console.log(`${color('green', 'Broadcast:')} ${result.acceptedBy}/${result.peers.length} reachable nodes`);
+    console.log(`${color('dim', 'Checked balance:')} ${result.preflight.balance} ${result.preflight.symbol} at block ${result.preflight.blockHeight}`);
+    console.log(`${color('green', 'Delivered:')} ${result.acceptedBy}/${result.peers.length} reachable nodes`);
     return;
   }
 

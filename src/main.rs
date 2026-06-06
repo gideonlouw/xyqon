@@ -30,6 +30,7 @@ const HALVING_INTERVAL: u64 = 100_000;
 const MAX_COIN_SUPPLY: f64 = 67_000_000.0;
 const BALANCE_EPSILON: f64 = 0.000_000_01;
 const DEFAULT_PEER_PORT: u16 = 7101;
+const EMPTY_REWARD_BLOCK_REJECTION_START_TIMESTAMP: i64 = 1_780_731_000; // 2026-06-06T07:30:00Z
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Transaction {
@@ -382,10 +383,18 @@ impl Block {
             return false;
         };
 
+        if self.requires_normal_transaction() && transactions.is_empty() {
+            return false;
+        }
+
         coinbase.is_valid_coinbase_reward(expected_reward)
             && transactions
                 .iter()
                 .all(Transaction::is_valid_signed_transaction)
+    }
+
+    fn requires_normal_transaction(&self) -> bool {
+        self.timestamp >= EMPTY_REWARD_BLOCK_REJECTION_START_TIMESTAMP
     }
 
     fn coinbase_amount(&self) -> f64 {
@@ -572,6 +581,13 @@ impl Blockchain {
 
         let expected_difficulty = expected_difficulty_for_next_block(&self.chain, block.timestamp);
         let expected_reward = self.allowed_reward_for_next_block();
+        if block.requires_normal_transaction() && block.normal_transactions().is_empty() {
+            return Err(
+                "received block has no normal transactions after empty reward block rejection activation"
+                    .to_string(),
+            );
+        }
+
         if !block.is_valid(expected_difficulty, expected_reward) {
             return Err(format!(
                 "received block failed validation; expected difficulty {expected_difficulty} and reward {expected_reward}"
@@ -888,11 +904,7 @@ impl Node {
         Ok(())
     }
 
-    fn mine_pending_transactions(
-        &self,
-        miner_reward_recipient: String,
-        mine_empty_blocks: bool,
-    ) -> Result<bool, String> {
+    fn mine_pending_transactions(&self, miner_reward_recipient: String) -> Result<bool, String> {
         let pruned = prune_mempool_against_current_chain(&self.blockchain, &self.mempool)?;
         if pruned > 0 {
             save_mempool(&self.mempool, &self.mempool_path)?;
@@ -907,7 +919,7 @@ impl Node {
             mempool.clone()
         };
 
-        if transactions.is_empty() && !mine_empty_blocks {
+        if transactions.is_empty() {
             return Ok(false);
         }
 
@@ -1251,7 +1263,6 @@ struct MineConfig {
     mempool_path: String,
     advertised_addr: Option<String>,
     interval_seconds: u64,
-    mine_empty_blocks: bool,
 }
 
 #[derive(Debug)]
@@ -1745,7 +1756,6 @@ impl MineConfig {
         let mut mempool_path = None;
         let mut advertised_addr = None;
         let mut interval_seconds = 1;
-        let mut mine_empty_blocks = false;
         let mut args = args.into_iter();
 
         while let Some(arg) = args.next() {
@@ -1788,7 +1798,10 @@ impl MineConfig {
                         .parse::<u64>()
                         .map_err(|_| format!("invalid interval: {value}"))?;
                 }
-                "--mine-empty" => mine_empty_blocks = true,
+                "--mine-empty" => return Err(
+                    "--mine-empty is no longer supported; mined blocks must include a transaction"
+                        .to_string(),
+                ),
                 _ => return Err(format!("unknown mine option: {arg}")),
             }
         }
@@ -1803,7 +1816,6 @@ impl MineConfig {
             mempool_path,
             advertised_addr,
             interval_seconds,
-            mine_empty_blocks,
         })
     }
 }
@@ -2136,13 +2148,13 @@ fn run_miner(config: MineConfig) -> Result<(), String> {
 
     loop {
         node.sync_chain_from_peers();
-        if !config.mine_empty_blocks && node.pending_transaction_count() == 0 {
+        if node.pending_transaction_count() == 0 {
             println!("No pending transactions; waiting for work");
             thread::sleep(Duration::from_secs(config.interval_seconds.max(1)));
             continue;
         }
 
-        match node.mine_pending_transactions(wallet.public_key.clone(), config.mine_empty_blocks) {
+        match node.mine_pending_transactions(wallet.public_key.clone()) {
             Ok(true) => node.print_chain(),
             Ok(false) => println!("No valid pending transactions; waiting for work"),
             Err(error) => eprintln!("Mining attempt failed: {error}"),
@@ -2436,6 +2448,10 @@ fn build_candidate_block(
         return Err("miner reward recipient cannot be empty".to_string());
     }
 
+    if transactions.is_empty() {
+        return Err("cannot mine an empty reward-only block".to_string());
+    }
+
     if !transactions
         .iter()
         .all(Transaction::is_valid_signed_transaction)
@@ -2615,13 +2631,12 @@ MINE OPTIONS:
   --chain <FILE>        Existing live chain file. Defaults to xyqon-chain.json
   --mempool <FILE>      Persistent mempool file. Defaults to <chain>.mempool.json
   --interval <SECONDS>  Delay between mining attempts. Defaults to 1
-  --mine-empty          Allow mining coinbase-only blocks when there are no pending transactions
 
 MINING:
   The node command only listens, syncs, validates, and relays.
   The submit command signs and broadcasts transactions without mining.
   The mine command runs a continuous mining loop for wallets that want to compete for rewards.
-  Miners wait for pending transactions by default; pass --mine-empty to mine reward-only blocks.
+  Miners wait for pending transactions and mined blocks must include at least one normal transaction.
   Each mined block receives one coinbase reward transaction.
   The initial reward is 10.0 XYQON and halves every 100,000 blocks.
   Difficulty adjusts dynamically to target one block every 30 seconds.
@@ -2714,6 +2729,57 @@ mod tests {
             3.0
         );
         assert_eq!(allowed_mining_reward_for_block(1, MAX_COIN_SUPPLY), 0.0);
+    }
+
+    #[test]
+    fn block_validation_rejects_empty_reward_blocks_after_activation() {
+        let miner_key = SigningKey::from_bytes(&[7; 32]);
+        let miner_public_key = bytes_to_hex(miner_key.verifying_key().as_bytes());
+        let mut blockchain = blockchain_with_genesis();
+        let prev = blockchain.latest_block().clone();
+        let reward = blockchain.allowed_reward_for_next_block();
+        let timestamp = EMPTY_REWARD_BLOCK_REJECTION_START_TIMESTAMP;
+        let difficulty = expected_difficulty_for_next_block(&blockchain.chain, timestamp);
+        let block = Block::new(
+            prev.index + 1,
+            timestamp,
+            difficulty,
+            vec![Transaction::coinbase(&miner_public_key, reward)],
+            prev.hash,
+        );
+
+        assert!(blockchain.add_received_block(block).is_err());
+    }
+
+    #[test]
+    fn block_validation_accepts_transaction_blocks_after_activation() {
+        let miner_key = SigningKey::from_bytes(&[7; 32]);
+        let miner_public_key = bytes_to_hex(miner_key.verifying_key().as_bytes());
+        let recipient_key = SigningKey::from_bytes(&[8; 32]);
+        let recipient_public_key = bytes_to_hex(recipient_key.verifying_key().as_bytes());
+        let mut blockchain = blockchain_with_genesis();
+
+        blockchain
+            .add_block(vec![], miner_public_key.clone())
+            .expect("pre-activation coinbase-only block should mine");
+
+        let transaction = Transaction::new("miner", &recipient_public_key, 1.0, &miner_key);
+        let prev = blockchain.latest_block().clone();
+        let reward = blockchain.allowed_reward_for_next_block();
+        let timestamp = EMPTY_REWARD_BLOCK_REJECTION_START_TIMESTAMP;
+        let difficulty = expected_difficulty_for_next_block(&blockchain.chain, timestamp);
+        let block = Block::new(
+            prev.index + 1,
+            timestamp,
+            difficulty,
+            vec![
+                Transaction::coinbase(&miner_public_key, reward),
+                transaction,
+            ],
+            prev.hash,
+        );
+
+        assert!(blockchain.add_received_block(block).is_ok());
     }
 
     #[test]

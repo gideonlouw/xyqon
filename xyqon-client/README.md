@@ -84,6 +84,7 @@ xyqon coin send \
 ```
 
 Coin creation and coin sends are signed 0 XYQON transactions. A miner must include them before the new coin or transfer appears on-chain.
+Before broadcasting a coin transfer, the client checks the best reachable public chain and refuses sends that exceed the wallet's confirmed coin balance.
 
 ## Mint And Send NFTs
 

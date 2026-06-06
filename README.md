@@ -241,7 +241,7 @@ xyqon mine \
   --chain /var/lib/xyqon/xyqon-chain.json
 ```
 
-The miner keeps syncing with peers, relays valid network messages, and tries to mine when transactions are waiting. The reward goes to whichever miner finds and broadcasts the accepted block. To allow reward-only blocks, add `--mine-empty`.
+The miner keeps syncing with peers, relays valid network messages, and tries to mine when transactions are waiting. The reward goes to whichever miner finds and broadcasts the accepted block. Mined blocks must include at least one normal transaction.
 
 The default mempool file is based on the chain path:
 
