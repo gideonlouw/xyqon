@@ -42,7 +42,7 @@ ${color('bold', 'Usage')}
   xyqon wallet new --name <NAME> [--out <FILE>]
   xyqon wallet show [--wallet <FILE>] [--private]
   xyqon balance [--wallet <FILE>] [--address <PUBLIC_KEY>]
-  xyqon send --to <PUBLIC_KEY> --amount <AMOUNT> [--wallet <FILE>]
+  xyqon send --to <PUBLIC_KEY> --amount <AMOUNT> [--fee <AMOUNT>] [--wallet <FILE>]
   xyqon coin create --symbol <SYMBOL> --name <NAME> --supply <AMOUNT> [--wallet <FILE>]
   xyqon coin send --symbol <SYMBOL> --to <PUBLIC_KEY> --amount <AMOUNT> [--wallet <FILE>]
   xyqon nft mint --collection <SYMBOL> --token-id <ID> --name <NAME> [--image-url <URL>] [--wallet <FILE>]
@@ -152,11 +152,13 @@ async function run() {
       wallet,
       recipient: options.to,
       amount: options.amount,
+      fee: options.fee,
       peers: peersFromOptions(options)
     });
 
     printHero('Transaction Sent');
     console.log(`${color('bold', 'Amount:')} ${result.transaction.amount} XYQON`);
+    console.log(`${color('bold', 'Fee:')} ${result.transaction.fee} XYQON`);
     console.log(`${color('bold', 'To:')} ${result.transaction.recipient}`);
     console.log(`${color('bold', 'Transaction ID:')} ${result.transactionId}`);
     console.log(`${color('dim', 'Checked balance:')} ${result.preflight.balance} XYQON at block ${result.preflight.blockHeight}`);

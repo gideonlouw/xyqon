@@ -9,6 +9,7 @@ export const DEFAULT_PEERS = [
   '147.182.138.183:7101'
 ];
 const XYQON_EPSILON = 0.00000001;
+export const DEFAULT_XYQON_TRANSACTION_FEE = 0.001;
 
 export const DEFAULT_WALLET_PATH = 'xyqon.wallet.json';
 
@@ -103,8 +104,11 @@ function stringifyAssetOperationForSigning(assetOperation) {
   throw new Error('unknown asset operation');
 }
 
-export function transactionPayload(sender, recipient, amount, senderPublicKey, assetOperation = null) {
-  const base = `${sender}|${recipient}|${Number(amount).toFixed(8)}|${senderPublicKey}`;
+export function transactionPayload(sender, recipient, amount, senderPublicKey, assetOperation = null, fee = 0) {
+  let base = `${sender}|${recipient}|${Number(amount).toFixed(8)}|${senderPublicKey}`;
+  if (Math.abs(Number(fee)) > XYQON_EPSILON) {
+    base = `${base}|fee:${Number(fee).toFixed(8)}`;
+  }
   const serializedAsset = stringifyAssetOperationForSigning(assetOperation);
   return serializedAsset ? `${base}|${serializedAsset}` : base;
 }
@@ -174,22 +178,27 @@ export function normalizeTokenAmount(amount, label = 'amount') {
   return numeric;
 }
 
-export function createSignedTransaction(wallet, recipient, amount) {
+export function createSignedTransaction(wallet, recipient, amount, fee = DEFAULT_XYQON_TRANSACTION_FEE) {
   const numericAmount = Number(amount);
   if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
     throw new Error('amount must be a positive number');
+  }
+  const numericFee = Number(fee);
+  if (!Number.isFinite(numericFee) || numericFee < 0) {
+    throw new Error('fee must be a non-negative number');
   }
 
   const privateKey = hexToBytes(wallet.private_key);
   const senderPublicKey = assertWalletMatchesPrivateKey(wallet, privateKey);
 
-  const payload = transactionPayload(wallet.name, recipient, numericAmount, senderPublicKey);
+  const payload = transactionPayload(wallet.name, recipient, numericAmount, senderPublicKey, null, numericFee);
   const signature = ed25519.sign(new TextEncoder().encode(payload), privateKey);
 
   return {
     sender: wallet.name,
     recipient,
     amount: numericAmount,
+    fee: numericFee,
     sender_public_key: senderPublicKey,
     signature: bytesToHex(signature)
   };
@@ -402,7 +411,7 @@ export function calculateBalances(chain) {
       if (transaction.asset_operation) {
         continue;
       }
-      debit(transaction.sender_public_key, transaction.amount);
+      debit(transaction.sender_public_key, transaction.amount + (transaction.fee ?? 0));
       credit(transaction.recipient, transaction.amount);
     }
   }
@@ -525,20 +534,24 @@ export async function getBalance(addressOrWallet, seedPeers = DEFAULT_PEERS) {
   };
 }
 
-export async function assertSpendableXyqonBalance(wallet, amount, seedPeers = DEFAULT_PEERS) {
+export async function assertSpendableXyqonBalance(wallet, amount, seedPeers = DEFAULT_PEERS, fee = 0) {
   const numericAmount = Number(amount);
+  const numericFee = Number(fee);
   const { chain, sourcePeer, peers } = await getBestChain(seedPeers);
   const balances = calculateBalances(chain);
   const balance = balances.get(wallet.public_key) ?? 0;
+  const totalDebit = numericAmount + numericFee;
 
-  if (balance + XYQON_EPSILON < numericAmount) {
+  if (balance + XYQON_EPSILON < totalDebit) {
     throw new Error(
-      `insufficient confirmed XYQON balance; balance is ${balance}, attempted to spend ${numericAmount}`
+      `insufficient confirmed XYQON balance; balance is ${balance}, attempted to spend ${numericAmount} plus fee ${numericFee}`
     );
   }
 
   return {
     balance,
+    fee: numericFee,
+    totalDebit,
     blockHeight: chain.chain.at(-1)?.index ?? 0,
     sourcePeer,
     peers
@@ -624,9 +637,9 @@ export async function broadcastTransaction(transaction, seedPeers = DEFAULT_PEER
   };
 }
 
-export async function sendTransaction({ wallet, recipient, amount, peers = DEFAULT_PEERS }) {
-  const transaction = createSignedTransaction(wallet, recipient, amount);
-  const preflight = await assertSpendableXyqonBalance(wallet, transaction.amount, peers);
+export async function sendTransaction({ wallet, recipient, amount, fee = DEFAULT_XYQON_TRANSACTION_FEE, peers = DEFAULT_PEERS }) {
+  const transaction = createSignedTransaction(wallet, recipient, amount, fee);
+  const preflight = await assertSpendableXyqonBalance(wallet, transaction.amount, peers, transaction.fee);
   return {
     transaction,
     preflight,

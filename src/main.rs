@@ -31,12 +31,27 @@ const MAX_COIN_SUPPLY: f64 = 67_000_000.0;
 const BALANCE_EPSILON: f64 = 0.000_000_01;
 const DEFAULT_PEER_PORT: u16 = 7101;
 const EMPTY_REWARD_BLOCK_REJECTION_START_TIMESTAMP: i64 = 1_780_732_800; // 2026-06-06T08:00:00Z
+const TRANSACTION_FEE_START_TIMESTAMP: i64 = 1_780_740_000; // 2026-06-06T10:00:00Z
+const PUBLIC_MINER_REWARD_START_TIMESTAMP: i64 = 1_780_740_000; // 2026-06-06T10:00:00Z
+const DEFAULT_XYQON_TRANSACTION_FEE: f64 = 0.001;
+const BOOTSTRAP_PUBLIC_MINER_PEERS: [&str; 4] = [
+    "143.244.149.8:7101",
+    "147.182.138.183:7101",
+    "185.29.89.24:7101",
+    "68.183.98.134:7101",
+];
+
+fn is_zero_amount(amount: &f64) -> bool {
+    amounts_equal(*amount, 0.0)
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Transaction {
     sender: String,
     recipient: String,
     amount: f64,
+    #[serde(default, skip_serializing_if = "is_zero_amount")]
+    fee: f64,
     sender_public_key: String,
     signature: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -45,14 +60,26 @@ struct Transaction {
 
 impl Transaction {
     fn new(sender: &str, recipient: &str, amount: f64, signing_key: &SigningKey) -> Self {
+        Transaction::new_with_fee(sender, recipient, amount, 0.0, signing_key)
+    }
+
+    fn new_with_fee(
+        sender: &str,
+        recipient: &str,
+        amount: f64,
+        fee: f64,
+        signing_key: &SigningKey,
+    ) -> Self {
         let sender_public_key = bytes_to_hex(signing_key.verifying_key().as_bytes());
-        let payload = Transaction::payload(sender, recipient, amount, &sender_public_key, None);
+        let payload =
+            Transaction::payload(sender, recipient, amount, fee, &sender_public_key, None);
         let signature = signing_key.sign(payload.as_bytes());
 
         Transaction {
             sender: sender.to_string(),
             recipient: recipient.to_string(),
             amount,
+            fee,
             sender_public_key,
             signature: bytes_to_hex(&signature.to_bytes()),
             asset_operation: None,
@@ -64,6 +91,7 @@ impl Transaction {
             sender: sender.to_string(),
             recipient: recipient.to_string(),
             amount,
+            fee: 0.0,
             sender_public_key: String::new(),
             signature: String::new(),
             asset_operation: None,
@@ -87,6 +115,7 @@ impl Transaction {
             sender,
             &sender_public_key,
             0.0,
+            0.0,
             &sender_public_key,
             Some(&asset_operation),
         );
@@ -96,6 +125,7 @@ impl Transaction {
             sender: sender.to_string(),
             recipient: sender_public_key.clone(),
             amount: 0.0,
+            fee: 0.0,
             sender_public_key,
             signature: bytes_to_hex(&signature.to_bytes()),
             asset_operation: Some(asset_operation),
@@ -115,6 +145,7 @@ impl Transaction {
             sender,
             &recipient,
             0.0,
+            0.0,
             &sender_public_key,
             Some(&asset_operation),
         );
@@ -124,6 +155,7 @@ impl Transaction {
             sender: sender.to_string(),
             recipient,
             amount: 0.0,
+            fee: 0.0,
             sender_public_key,
             signature: bytes_to_hex(&signature.to_bytes()),
             asset_operation: Some(asset_operation),
@@ -144,6 +176,7 @@ impl Transaction {
             sender,
             &sender_public_key,
             0.0,
+            0.0,
             &sender_public_key,
             Some(&asset_operation),
         );
@@ -153,6 +186,7 @@ impl Transaction {
             sender: sender.to_string(),
             recipient: sender_public_key.clone(),
             amount: 0.0,
+            fee: 0.0,
             sender_public_key,
             signature: bytes_to_hex(&signature.to_bytes()),
             asset_operation: Some(asset_operation),
@@ -172,6 +206,7 @@ impl Transaction {
             sender,
             &recipient,
             0.0,
+            0.0,
             &sender_public_key,
             Some(&asset_operation),
         );
@@ -181,6 +216,7 @@ impl Transaction {
             sender: sender.to_string(),
             recipient,
             amount: 0.0,
+            fee: 0.0,
             sender_public_key,
             signature: bytes_to_hex(&signature.to_bytes()),
             asset_operation: Some(asset_operation),
@@ -193,10 +229,12 @@ impl Transaction {
         }
 
         if let Some(operation) = self.asset_operation.as_ref() {
-            if operation.requires_zero_xyqon_amount() && !amounts_equal(self.amount, 0.0) {
+            if operation.requires_zero_xyqon_amount()
+                && (!amounts_equal(self.amount, 0.0) || !amounts_equal(self.fee, 0.0))
+            {
                 return false;
             }
-        } else if self.amount <= 0.0 {
+        } else if self.amount <= 0.0 || self.fee < 0.0 {
             return false;
         }
 
@@ -216,17 +254,36 @@ impl Transaction {
             &self.sender,
             &self.recipient,
             self.amount,
+            self.fee,
             &self.sender_public_key,
             self.asset_operation.as_ref(),
         );
 
-        public_key.verify(payload.as_bytes(), &signature).is_ok()
+        if public_key.verify(payload.as_bytes(), &signature).is_ok() {
+            return true;
+        }
+
+        if amounts_equal(self.fee, 0.0) {
+            let legacy_payload = Transaction::legacy_payload(
+                &self.sender,
+                &self.recipient,
+                self.amount,
+                &self.sender_public_key,
+                self.asset_operation.as_ref(),
+            );
+            return public_key
+                .verify(legacy_payload.as_bytes(), &signature)
+                .is_ok();
+        }
+
+        false
     }
 
     fn is_valid_genesis_transaction(&self) -> bool {
         self.sender == "network"
             && self.recipient == "genesis"
             && self.amount == 0.0
+            && amounts_equal(self.fee, 0.0)
             && self.sender_public_key.is_empty()
             && self.signature.is_empty()
     }
@@ -235,11 +292,54 @@ impl Transaction {
         self.sender == "network"
             && !self.recipient.is_empty()
             && amounts_equal(self.amount, expected_reward)
+            && amounts_equal(self.fee, 0.0)
             && self.sender_public_key.is_empty()
             && self.signature.is_empty()
     }
 
+    fn is_valid_fee_for_block(&self, block_timestamp: i64) -> bool {
+        if self.asset_operation.is_some() {
+            return amounts_equal(self.fee, 0.0);
+        }
+
+        if block_timestamp < TRANSACTION_FEE_START_TIMESTAMP {
+            return self.fee >= 0.0;
+        }
+
+        self.fee + BALANCE_EPSILON >= DEFAULT_XYQON_TRANSACTION_FEE
+    }
+
+    fn fee_amount(&self) -> f64 {
+        if self.asset_operation.is_some() {
+            0.0
+        } else {
+            self.fee
+        }
+    }
+
     fn payload(
+        sender: &str,
+        recipient: &str,
+        amount: f64,
+        fee: f64,
+        sender_public_key: &str,
+        asset_operation: Option<&AssetOperation>,
+    ) -> String {
+        let mut base = format!("{sender}|{recipient}|{amount:.8}|{sender_public_key}");
+        if !amounts_equal(fee, 0.0) {
+            base = format!("{base}|fee:{fee:.8}");
+        }
+        match asset_operation {
+            Some(operation) => {
+                let operation = serde_json::to_string(operation)
+                    .expect("asset operation should serialize for signing");
+                format!("{base}|{operation}")
+            }
+            None => base,
+        }
+    }
+
+    fn legacy_payload(
         sender: &str,
         recipient: &str,
         amount: f64,
@@ -311,6 +411,8 @@ struct Block {
     difficulty: usize,
     transactions: Vec<Transaction>,
     previous_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    miner_peer: Option<String>,
     hash: String,
     nonce: u64,
 }
@@ -322,6 +424,7 @@ impl Block {
         difficulty: usize,
         transactions: Vec<Transaction>,
         previous_hash: String,
+        miner_peer: Option<String>,
     ) -> Self {
         let mut block = Block {
             index,
@@ -329,6 +432,7 @@ impl Block {
             difficulty,
             transactions,
             previous_hash,
+            miner_peer,
             hash: String::new(),
             nonce: 0,
         };
@@ -340,7 +444,7 @@ impl Block {
     fn calculate_hash(&self) -> String {
         let transactions =
             serde_json::to_string(&self.transactions).expect("transactions should serialize");
-        let input = format!(
+        let base = format!(
             "{}{}{}{}{}{}",
             self.index,
             self.timestamp,
@@ -349,6 +453,10 @@ impl Block {
             self.previous_hash,
             self.nonce
         );
+        let input = match self.miner_peer.as_deref() {
+            Some(miner_peer) => format!("{base}{miner_peer}"),
+            None => base,
+        };
 
         let mut hasher = Sha256::new();
         hasher.update(input);
@@ -391,10 +499,36 @@ impl Block {
             && transactions
                 .iter()
                 .all(Transaction::is_valid_signed_transaction)
+            && transactions
+                .iter()
+                .all(|transaction| transaction.is_valid_fee_for_block(self.timestamp))
     }
 
     fn requires_normal_transaction(&self) -> bool {
         self.timestamp >= EMPTY_REWARD_BLOCK_REJECTION_START_TIMESTAMP
+    }
+
+    fn requires_public_miner(&self) -> bool {
+        self.timestamp >= PUBLIC_MINER_REWARD_START_TIMESTAMP
+    }
+
+    fn has_known_public_miner(&self, known_miner_peers: &HashSet<String>) -> bool {
+        if !self.requires_public_miner() {
+            return true;
+        }
+
+        self.miner_peer
+            .as_deref()
+            .and_then(normalize_peer_address)
+            .map(|miner_peer| known_miner_peers.contains(&miner_peer))
+            .unwrap_or(false)
+    }
+
+    fn total_transaction_fees(&self) -> f64 {
+        self.normal_transactions()
+            .iter()
+            .map(Transaction::fee_amount)
+            .sum()
     }
 
     fn coinbase_amount(&self) -> f64 {
@@ -464,15 +598,19 @@ impl WalletBalances {
             return Err("transaction amount must be positive".to_string());
         }
 
+        let total_debit = transaction.amount + transaction.fee_amount();
         let balance = self.balance(&transaction.sender_public_key);
-        if balance + BALANCE_EPSILON < transaction.amount {
+        if balance + BALANCE_EPSILON < total_debit {
             return Err(format!(
-                "insufficient funds for {}; balance is {}, attempted to spend {}",
-                transaction.sender, balance, transaction.amount
+                "insufficient funds for {}; balance is {}, attempted to spend {} plus fee {}",
+                transaction.sender,
+                balance,
+                transaction.amount,
+                transaction.fee_amount()
             ));
         }
 
-        self.debit(&transaction.sender_public_key, transaction.amount);
+        self.debit(&transaction.sender_public_key, total_debit);
         self.credit(&transaction.recipient, transaction.amount);
         Ok(())
     }
@@ -540,12 +678,13 @@ impl Blockchain {
 
         self.validate_spending(&transactions)?;
 
-        let reward = self.allowed_reward_for_next_block();
-        if reward <= 0.0 {
+        let subsidy = self.allowed_reward_for_next_block();
+        if subsidy <= 0.0 {
             return Err(format!(
                 "max supply of {MAX_COIN_SUPPLY} XYQON has already been reached"
             ));
         }
+        let reward = subsidy + total_transaction_fees(&transactions);
 
         transactions.insert(0, Transaction::coinbase(&miner_reward_recipient, reward));
 
@@ -558,9 +697,10 @@ impl Blockchain {
             difficulty,
             transactions,
             prev.hash.clone(),
+            None,
         );
         self.chain.push(new_block.clone());
-        self.circulating_supply += reward;
+        self.circulating_supply += subsidy;
         Ok(new_block)
     }
 
@@ -580,7 +720,8 @@ impl Blockchain {
         }
 
         let expected_difficulty = expected_difficulty_for_next_block(&self.chain, block.timestamp);
-        let expected_reward = self.allowed_reward_for_next_block();
+        let subsidy = self.allowed_reward_for_next_block();
+        let expected_reward = subsidy + block.total_transaction_fees();
         if block.requires_normal_transaction() && block.normal_transactions().is_empty() {
             return Err(
                 "received block has no normal transactions after empty reward block rejection activation"
@@ -596,7 +737,7 @@ impl Blockchain {
 
         self.validate_spending(block.normal_transactions())?;
 
-        let new_supply = self.circulating_supply + block.coinbase_amount();
+        let new_supply = self.circulating_supply + subsidy;
         if new_supply > MAX_COIN_SUPPLY {
             return Err(format!(
                 "received block would exceed max supply of {MAX_COIN_SUPPLY} XYQON"
@@ -606,6 +747,18 @@ impl Blockchain {
         self.circulating_supply = new_supply;
         self.chain.push(block);
         Ok(())
+    }
+
+    fn add_received_block_with_known_miners(
+        &mut self,
+        block: Block,
+        known_miner_peers: &HashSet<String>,
+    ) -> Result<(), String> {
+        if !block.has_known_public_miner(known_miner_peers) {
+            return Err("received block reward miner is not a known public peer".to_string());
+        }
+
+        self.add_received_block(block)
     }
 
     fn is_valid(&self) -> bool {
@@ -619,7 +772,8 @@ impl Blockchain {
             let previous = &self.chain[i - 1];
             let expected_difficulty =
                 expected_difficulty_for_next_block(&self.chain[..i], current.timestamp);
-            let expected_reward = allowed_mining_reward_for_block(current.index, total_supply);
+            let subsidy = allowed_mining_reward_for_block(current.index, total_supply);
+            let expected_reward = subsidy + current.total_transaction_fees();
 
             if !current.is_valid(expected_difficulty, expected_reward) {
                 return false;
@@ -646,7 +800,7 @@ impl Blockchain {
                 return false;
             }
 
-            total_supply += current.coinbase_amount();
+            total_supply += subsidy;
             if total_supply > MAX_COIN_SUPPLY {
                 return false;
             }
@@ -664,7 +818,11 @@ impl Blockchain {
     }
 
     fn recalculate_circulating_supply(&mut self) {
-        self.circulating_supply = self.chain.iter().skip(1).map(Block::coinbase_amount).sum();
+        let mut total_supply = 0.0;
+        for block in self.chain.iter().skip(1) {
+            total_supply += allowed_mining_reward_for_block(block.index, total_supply);
+        }
+        self.circulating_supply = total_supply;
     }
 
     fn wallet_balance(&self, wallet: &WalletFile) -> f64 {
@@ -713,6 +871,13 @@ impl Blockchain {
         *self = candidate;
         self.recalculate_circulating_supply();
         Ok(true)
+    }
+
+    fn has_only_known_public_miners(&self, known_miner_peers: &HashSet<String>) -> bool {
+        self.chain
+            .iter()
+            .skip(1)
+            .all(|block| block.has_known_public_miner(known_miner_peers))
     }
 
     fn chain_score(&self) -> u128 {
@@ -806,6 +971,19 @@ impl PeerBook {
             .lock()
             .map(|peers| peers.clone())
             .unwrap_or_else(|_| Vec::new())
+    }
+
+    fn known_public_miner_peers(&self) -> HashSet<String> {
+        let mut peers: HashSet<String> = BOOTSTRAP_PUBLIC_MINER_PEERS
+            .iter()
+            .filter_map(|peer| normalize_peer_address(peer))
+            .collect();
+
+        peers.extend(self.snapshot());
+        if let Some(local_addr) = self.local_addr.as_ref() {
+            peers.insert(local_addr.clone());
+        }
+        peers
     }
 
     fn persist(&self) -> Result<(), String> {
@@ -928,7 +1106,16 @@ impl Node {
                 .blockchain
                 .lock()
                 .map_err(|_| "blockchain lock was poisoned".to_string())?;
-            build_candidate_block(&blockchain, transactions, miner_reward_recipient)?
+            let miner_peer = self
+                .advertised_addr
+                .as_deref()
+                .and_then(normalize_peer_address);
+            build_candidate_block(
+                &blockchain,
+                transactions,
+                miner_reward_recipient,
+                miner_peer,
+            )?
         };
 
         let accepted = {
@@ -936,7 +1123,8 @@ impl Node {
                 .blockchain
                 .lock()
                 .map_err(|_| "blockchain lock was poisoned".to_string())?;
-            blockchain.add_received_block(block.clone())?;
+            let known_miner_peers = self.peers.known_public_miner_peers();
+            blockchain.add_received_block_with_known_miners(block.clone(), &known_miner_peers)?;
             save_blockchain(&blockchain, &self.chain_path)?;
             true
         };
@@ -980,11 +1168,18 @@ impl Node {
         for peer in self.peers.snapshot() {
             match request_chain_from_peer(&peer) {
                 Ok(candidate) => {
+                    let known_miner_peers = self.peers.known_public_miner_peers();
                     let result = self
                         .blockchain
                         .lock()
                         .map_err(|_| "blockchain lock was poisoned".to_string())
                         .and_then(|mut blockchain| {
+                            if !candidate.has_only_known_public_miners(&known_miner_peers) {
+                                return Err(
+                                    "candidate chain includes unknown public miner peer rewards"
+                                        .to_string(),
+                                );
+                            }
                             let replaced = blockchain.replace_with_better_chain(candidate)?;
                             if replaced {
                                 save_blockchain(&blockchain, &self.chain_path)?;
@@ -1077,7 +1272,9 @@ fn handle_peer_stream(
                     .lock()
                     .map_err(|_| "blockchain lock was poisoned".to_string())
                     .and_then(|mut blockchain| {
-                        blockchain.add_received_block(block)?;
+                        let known_miner_peers = peers.known_public_miner_peers();
+                        blockchain
+                            .add_received_block_with_known_miners(block, &known_miner_peers)?;
                         save_blockchain(&blockchain, &chain_path)?;
                         Ok(())
                     });
@@ -1202,6 +1399,7 @@ struct SubmitConfig {
     mempool_path: String,
     recipient: String,
     amount: f64,
+    fee: f64,
 }
 
 #[derive(Debug)]
@@ -1370,6 +1568,7 @@ impl SubmitConfig {
         let mut mempool_path = None;
         let mut recipient = None;
         let mut amount = None;
+        let mut fee = DEFAULT_XYQON_TRANSACTION_FEE;
         let mut args = args.into_iter();
 
         while let Some(arg) = args.next() {
@@ -1413,6 +1612,14 @@ impl SubmitConfig {
                             .map_err(|_| format!("invalid amount: {value}"))?,
                     );
                 }
+                "--fee" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| "--fee requires a number".to_string())?;
+                    fee = value
+                        .parse::<f64>()
+                        .map_err(|_| format!("invalid fee: {value}"))?;
+                }
                 _ => return Err(format!("unknown submit option: {arg}")),
             }
         }
@@ -1427,6 +1634,7 @@ impl SubmitConfig {
             mempool_path,
             recipient: recipient.ok_or_else(|| "submit requires --to <RECIPIENT>".to_string())?,
             amount: amount.ok_or_else(|| "submit requires --amount <AMOUNT>".to_string())?,
+            fee,
         })
     }
 }
@@ -1988,15 +2196,16 @@ fn submit_transaction(config: SubmitConfig) -> Result<(), String> {
     })?;
 
     node.sync_chain_from_peers();
-    node.submit_transaction(Transaction::new(
+    node.submit_transaction(Transaction::new_with_fee(
         &wallet.name,
         &config.recipient,
         config.amount,
+        config.fee,
         &signing_key,
     ))?;
     println!(
-        "Submitted transaction from {} to {} for {} XYQON",
-        wallet.public_key, config.recipient, config.amount
+        "Submitted transaction from {} to {} for {} XYQON with {} XYQON fee",
+        wallet.public_key, config.recipient, config.amount, config.fee
     );
     Ok(())
 }
@@ -2319,6 +2528,10 @@ fn normalize_peer_address(address: &str) -> Option<String> {
     }
 }
 
+fn total_transaction_fees(transactions: &[Transaction]) -> f64 {
+    transactions.iter().map(Transaction::fee_amount).sum()
+}
+
 fn peer_book_is_local(local_addr: &Option<String>, peer: &str) -> bool {
     local_addr
         .as_deref()
@@ -2364,6 +2577,13 @@ fn add_transaction_to_mempool(
 ) -> Result<(), String> {
     if !transaction.is_valid_signed_transaction() {
         return Err("transaction signature is invalid".to_string());
+    }
+    if Utc::now().timestamp() >= TRANSACTION_FEE_START_TIMESTAMP
+        && !transaction.is_valid_fee_for_block(Utc::now().timestamp())
+    {
+        return Err(format!(
+            "transaction fee must be at least {DEFAULT_XYQON_TRANSACTION_FEE} XYQON"
+        ));
     }
 
     let transaction_id = transaction.id();
@@ -2422,6 +2642,8 @@ fn prune_mempool_against_current_chain(
         let transaction_id = transaction.id();
         if !transaction.is_valid_signed_transaction()
             || !seen_transaction_ids.insert(transaction_id)
+            || (Utc::now().timestamp() >= TRANSACTION_FEE_START_TIMESTAMP
+                && !transaction.is_valid_fee_for_block(Utc::now().timestamp()))
         {
             return false;
         }
@@ -2443,6 +2665,7 @@ fn build_candidate_block(
     blockchain: &Blockchain,
     mut transactions: Vec<Transaction>,
     miner_reward_recipient: String,
+    miner_peer: Option<String>,
 ) -> Result<Block, String> {
     if miner_reward_recipient.is_empty() {
         return Err("miner reward recipient cannot be empty".to_string());
@@ -2461,17 +2684,23 @@ fn build_candidate_block(
 
     blockchain.validate_spending(&transactions)?;
 
-    let reward = blockchain.allowed_reward_for_next_block();
-    if reward <= 0.0 {
+    let subsidy = blockchain.allowed_reward_for_next_block();
+    if subsidy <= 0.0 {
         return Err(format!(
             "max supply of {MAX_COIN_SUPPLY} XYQON has already been reached"
         ));
     }
+    let reward = subsidy + total_transaction_fees(&transactions);
 
     transactions.insert(0, Transaction::coinbase(&miner_reward_recipient, reward));
 
     let prev = blockchain.latest_block();
     let timestamp = Utc::now().timestamp();
+    if timestamp >= PUBLIC_MINER_REWARD_START_TIMESTAMP && miner_peer.is_none() {
+        return Err(
+            "mining after public miner activation requires --advertise <IP:PORT>".to_string(),
+        );
+    }
     let difficulty = expected_difficulty_for_next_block(&blockchain.chain, timestamp);
     Ok(Block::new(
         prev.index + 1,
@@ -2479,6 +2708,7 @@ fn build_candidate_block(
         difficulty,
         transactions,
         prev.hash.clone(),
+        miner_peer,
     ))
 }
 
@@ -2589,6 +2819,7 @@ SUBMIT OPTIONS:
   --wallet <FILE>       Wallet that signs the transaction
   --to <RECIPIENT>      Recipient public key
   --amount <AMOUNT>     Amount to transfer
+  --fee <AMOUNT>        Miner fee for native XYQON transfers. Defaults to 0.001
   --peer <ADDR>         Peer to broadcast the transaction to. Can be repeated
   --peers-file <FILE>   Load peers from a newline-separated file
   --chain <FILE>        Existing live chain file. Defaults to xyqon-chain.json
@@ -2637,7 +2868,8 @@ MINING:
   The submit command signs and broadcasts transactions without mining.
   The mine command runs a continuous mining loop for wallets that want to compete for rewards.
   Miners wait for pending transactions and mined blocks must include at least one normal transaction.
-  Each mined block receives one coinbase reward transaction.
+  After public miner activation, miners must advertise a known public IP:PORT before rewards are accepted.
+  Each mined block receives one coinbase reward transaction containing the block reward plus native XYQON fees.
   The initial reward is 10.0 XYQON and halves every 100,000 blocks.
   Difficulty adjusts dynamically to target one block every 30 seconds.
   When --wallet is used, the reward is paid to that wallet's public key.
@@ -2671,6 +2903,7 @@ mod tests {
             INITIAL_DIFFICULTY,
             vec![Transaction::system("network", "genesis", 0.0)],
             "0".to_string(),
+            None,
         )
     }
 
@@ -2746,6 +2979,7 @@ mod tests {
             difficulty,
             vec![Transaction::coinbase(&miner_public_key, reward)],
             prev.hash,
+            None,
         );
 
         assert!(blockchain.add_received_block(block).is_err());
@@ -2777,6 +3011,7 @@ mod tests {
                 transaction,
             ],
             prev.hash,
+            None,
         );
 
         assert!(blockchain.add_received_block(block).is_ok());

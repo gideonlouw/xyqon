@@ -1,5 +1,6 @@
 /target
 /target-codex
+/target-codex-check
 *.wallet.json
 wallet.json
 xyqon-chain.json
