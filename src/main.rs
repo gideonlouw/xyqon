@@ -888,7 +888,17 @@ impl Node {
         Ok(())
     }
 
-    fn mine_pending_transactions(&self, miner_reward_recipient: String) -> Result<(), String> {
+    fn mine_pending_transactions(
+        &self,
+        miner_reward_recipient: String,
+        mine_empty_blocks: bool,
+    ) -> Result<bool, String> {
+        let pruned = prune_mempool_against_current_chain(&self.blockchain, &self.mempool)?;
+        if pruned > 0 {
+            save_mempool(&self.mempool, &self.mempool_path)?;
+            println!("Removed {pruned} stale transaction(s) from mempool");
+        }
+
         let transactions = {
             let mempool = self
                 .mempool
@@ -896,6 +906,10 @@ impl Node {
                 .map_err(|_| "mempool lock was poisoned".to_string())?;
             mempool.clone()
         };
+
+        if transactions.is_empty() && !mine_empty_blocks {
+            return Ok(false);
+        }
 
         let block = {
             let blockchain = self
@@ -916,12 +930,15 @@ impl Node {
         };
 
         if accepted {
-            remove_block_transactions_from_mempool(&self.mempool, &block)?;
+            let pruned = prune_mempool_against_current_chain(&self.blockchain, &self.mempool)?;
+            if pruned > 0 {
+                println!("Removed {pruned} stale transaction(s) from mempool");
+            }
             save_mempool(&self.mempool, &self.mempool_path)?;
             self.broadcast_block(&block);
         }
 
-        Ok(())
+        Ok(true)
     }
 
     fn pending_transaction_count(&self) -> usize {
@@ -964,7 +981,26 @@ impl Node {
                         });
 
                     match result {
-                        Ok(true) => println!("Synced a better chain from {peer}"),
+                        Ok(true) => {
+                            println!("Synced a better chain from {peer}");
+                            match prune_mempool_against_current_chain(
+                                &self.blockchain,
+                                &self.mempool,
+                            ) {
+                                Ok(pruned) if pruned > 0 => {
+                                    println!("Removed {pruned} stale transaction(s) from mempool");
+                                    if let Err(error) =
+                                        save_mempool(&self.mempool, &self.mempool_path)
+                                    {
+                                        eprintln!("Could not save mempool after sync: {error}");
+                                    }
+                                }
+                                Ok(_) => {}
+                                Err(error) => {
+                                    eprintln!("Could not clean mempool after sync: {error}")
+                                }
+                            }
+                        }
                         Ok(false) => println!("Local chain is already at least as good as {peer}"),
                         Err(error) => eprintln!("Could not sync chain from {peer}: {error}"),
                     }
@@ -1037,15 +1073,23 @@ fn handle_peer_stream(
                 match result {
                     Ok(()) => {
                         println!("Accepted block {block_index} from peer");
-                        if let Ok(blockchain) = blockchain.lock() {
-                            let block = blockchain.latest_block().clone();
-                            drop(blockchain);
-                            if let Err(error) =
-                                remove_block_transactions_from_mempool(&mempool, &block)
-                            {
-                                eprintln!("Could not clean mempool after block: {error}");
-                            } else if let Err(error) = save_mempool(&mempool, &mempool_path) {
-                                eprintln!("Could not save mempool after block: {error}");
+                        if let Ok(blockchain_guard) = blockchain.lock() {
+                            let block = blockchain_guard.latest_block().clone();
+                            drop(blockchain_guard);
+                            match prune_mempool_against_current_chain(&blockchain, &mempool) {
+                                Ok(pruned) => {
+                                    if pruned > 0 {
+                                        println!(
+                                            "Removed {pruned} stale transaction(s) from mempool"
+                                        );
+                                    }
+                                    if let Err(error) = save_mempool(&mempool, &mempool_path) {
+                                        eprintln!("Could not save mempool after block: {error}");
+                                    }
+                                }
+                                Err(error) => {
+                                    eprintln!("Could not clean mempool after block: {error}")
+                                }
                             }
                             broadcast_block_to_peers(&block, &peers);
                         }
@@ -2098,8 +2142,9 @@ fn run_miner(config: MineConfig) -> Result<(), String> {
             continue;
         }
 
-        match node.mine_pending_transactions(wallet.public_key.clone()) {
-            Ok(()) => node.print_chain(),
+        match node.mine_pending_transactions(wallet.public_key.clone(), config.mine_empty_blocks) {
+            Ok(true) => node.print_chain(),
+            Ok(false) => println!("No valid pending transactions; waiting for work"),
             Err(error) => eprintln!("Mining attempt failed: {error}"),
         }
 
@@ -2310,6 +2355,16 @@ fn add_transaction_to_mempool(
     }
 
     let transaction_id = transaction.id();
+    let blockchain = blockchain
+        .lock()
+        .map_err(|_| "blockchain lock was poisoned".to_string())?;
+    if blockchain
+        .confirmed_transaction_ids()
+        .contains(&transaction_id)
+    {
+        return Err("transaction has already been confirmed".to_string());
+    }
+
     let mut mempool = mempool
         .lock()
         .map_err(|_| "mempool lock was poisoned".to_string())?;
@@ -2319,16 +2374,6 @@ fn add_transaction_to_mempool(
         .any(|existing| existing.id() == transaction_id)
     {
         return Err("transaction is already in the mempool".to_string());
-    }
-
-    let blockchain = blockchain
-        .lock()
-        .map_err(|_| "blockchain lock was poisoned".to_string())?;
-    if blockchain
-        .confirmed_transaction_ids()
-        .contains(&transaction_id)
-    {
-        return Err("transaction has already been confirmed".to_string());
     }
 
     let mut balances = WalletBalances::from_chain(&blockchain.chain);
@@ -2345,22 +2390,41 @@ fn add_transaction_to_mempool(
     Ok(())
 }
 
-fn remove_block_transactions_from_mempool(
+fn prune_mempool_against_current_chain(
+    blockchain: &Arc<Mutex<Blockchain>>,
     mempool: &Arc<Mutex<Vec<Transaction>>>,
-    block: &Block,
-) -> Result<(), String> {
-    let confirmed_ids: Vec<String> = block
-        .transactions
-        .iter()
-        .skip(1)
-        .map(Transaction::id)
-        .collect();
+) -> Result<usize, String> {
+    let blockchain = blockchain
+        .lock()
+        .map_err(|_| "blockchain lock was poisoned".to_string())?;
+    let mut balances = WalletBalances::from_chain(&blockchain.chain);
+    let mut assets = AssetLedger::from_chain(&blockchain.chain)?;
+    let mut seen_transaction_ids = blockchain.confirmed_transaction_ids();
+
     let mut mempool = mempool
         .lock()
         .map_err(|_| "mempool lock was poisoned".to_string())?;
 
-    mempool.retain(|transaction| !confirmed_ids.contains(&transaction.id()));
-    Ok(())
+    let original_len = mempool.len();
+    mempool.retain(|transaction| {
+        let transaction_id = transaction.id();
+        if !transaction.is_valid_signed_transaction()
+            || !seen_transaction_ids.insert(transaction_id)
+        {
+            return false;
+        }
+
+        if balances.apply_signed_transaction(transaction).is_err() {
+            return false;
+        }
+
+        if assets.apply_transaction(transaction).is_err() {
+            return false;
+        }
+
+        true
+    });
+    Ok(original_len - mempool.len())
 }
 
 fn build_candidate_block(
@@ -2708,6 +2772,39 @@ mod tests {
         let result = add_transaction_to_mempool(&blockchain, &mempool, transaction);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn mempool_prune_removes_transactions_invalidated_by_new_chain_state() {
+        let miner_key = SigningKey::from_bytes(&[7; 32]);
+        let miner_public_key = bytes_to_hex(miner_key.verifying_key().as_bytes());
+        let recipient_key = SigningKey::from_bytes(&[11; 32]);
+        let recipient_public_key = bytes_to_hex(recipient_key.verifying_key().as_bytes());
+        let mut blockchain = blockchain_with_genesis();
+
+        blockchain
+            .add_block(vec![], miner_public_key.clone())
+            .expect("coinbase-only block should mine");
+
+        let blockchain = Arc::new(Mutex::new(blockchain));
+        let mempool = Arc::new(Mutex::new(Vec::new()));
+        let pending_spend = Transaction::new("miner", &recipient_public_key, 7.0, &miner_key);
+
+        add_transaction_to_mempool(&blockchain, &mempool, pending_spend)
+            .expect("pending transaction should be valid before the competing spend");
+
+        {
+            let mut blockchain = blockchain.lock().expect("blockchain lock should work");
+            let competing_spend = Transaction::new("miner", &recipient_public_key, 5.0, &miner_key);
+            blockchain
+                .add_block(vec![competing_spend], miner_public_key)
+                .expect("competing spend should be accepted");
+        }
+
+        prune_mempool_against_current_chain(&blockchain, &mempool)
+            .expect("mempool pruning should work");
+
+        assert!(mempool.lock().expect("mempool lock should work").is_empty());
     }
 
     #[test]

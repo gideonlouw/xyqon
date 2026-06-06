@@ -8,6 +8,7 @@ export const DEFAULT_PEERS = [
   '143.244.149.8:7101',
   '147.182.138.183:7101'
 ];
+const XYQON_EPSILON = 0.00000001;
 
 export const DEFAULT_WALLET_PATH = 'xyqon.wallet.json';
 
@@ -524,6 +525,26 @@ export async function getBalance(addressOrWallet, seedPeers = DEFAULT_PEERS) {
   };
 }
 
+export async function assertSpendableXyqonBalance(wallet, amount, seedPeers = DEFAULT_PEERS) {
+  const numericAmount = Number(amount);
+  const { chain, sourcePeer, peers } = await getBestChain(seedPeers);
+  const balances = calculateBalances(chain);
+  const balance = balances.get(wallet.public_key) ?? 0;
+
+  if (balance + XYQON_EPSILON < numericAmount) {
+    throw new Error(
+      `insufficient confirmed XYQON balance; balance is ${balance}, attempted to spend ${numericAmount}`
+    );
+  }
+
+  return {
+    balance,
+    blockHeight: chain.chain.at(-1)?.index ?? 0,
+    sourcePeer,
+    peers
+  };
+}
+
 export async function getCreatedCoins(addressOrWallet, seedPeers = DEFAULT_PEERS) {
   const { chain, sourcePeer, peers } = await getBestChain(seedPeers);
   return {
@@ -583,8 +604,10 @@ export async function broadcastTransaction(transaction, seedPeers = DEFAULT_PEER
 
 export async function sendTransaction({ wallet, recipient, amount, peers = DEFAULT_PEERS }) {
   const transaction = createSignedTransaction(wallet, recipient, amount);
+  const preflight = await assertSpendableXyqonBalance(wallet, transaction.amount, peers);
   return {
     transaction,
+    preflight,
     ...(await broadcastTransaction(transaction, peers))
   };
 }

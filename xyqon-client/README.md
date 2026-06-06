@@ -67,6 +67,7 @@ xyqon send \
 ```
 
 The transaction is broadcast to reachable public nodes. A miner must include it in a block before the receiver sees the confirmed balance.
+The client checks the best reachable public chain before broadcasting and refuses sends that exceed the wallet's confirmed XYQON balance.
 
 ## Create And Send Coins
 
