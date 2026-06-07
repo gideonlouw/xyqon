@@ -36,7 +36,25 @@ const EMPTY_REWARD_BLOCK_REJECTION_START_TIMESTAMP: i64 = 1_780_732_800; // 2026
 const TRANSACTION_FEE_START_TIMESTAMP: i64 = 1_780_747_200; // 2026-06-06T12:00:00Z
 const PUBLIC_MINER_REWARD_START_TIMESTAMP: i64 = 1_780_747_200; // 2026-06-06T12:00:00Z
 const DEFAULT_XYQON_TRANSACTION_FEE: f64 = 0.001;
-const BOOTSTRAP_PUBLIC_MINER_PEERS: [&str; 2] = ["143.244.149.8:7101", "68.183.98.134:7101"];
+const BOOTSTRAP_PUBLIC_MINER_PEERS: [&str; 3] = [
+    "143.244.149.8:7101",
+    "68.183.98.134:7101",
+    "147.182.138.183:7101",
+];
+const TRUSTED_PUBLIC_MINER_REWARD_WALLETS: [(&str, &str); 3] = [
+    (
+        "143.244.149.8:7101",
+        "5a158b3821cc53e8838f02a4b7f2e7ec7849588907e18682fa982c3328eeec80",
+    ),
+    (
+        "68.183.98.134:7101",
+        "738dc51f2251240ad28fcbadb196b4bbe2868b90e1c63490af61104e5d3f4576",
+    ),
+    (
+        "147.182.138.183:7101",
+        "3346ff38cdb9a27bb403943b120da896a9799b1dc37438ac6a69be76394440fd",
+    ),
+];
 
 fn is_zero_amount(amount: &f64) -> bool {
     amounts_equal(*amount, 0.0)
@@ -521,6 +539,24 @@ impl Block {
             .unwrap_or(false)
     }
 
+    fn has_expected_public_miner_reward(&self) -> bool {
+        if !self.requires_public_miner() {
+            return true;
+        }
+
+        let Some(miner_peer) = self.miner_peer.as_deref().and_then(normalize_peer_address) else {
+            return false;
+        };
+        let Some(expected_wallet) = trusted_public_miner_reward_wallet(&miner_peer) else {
+            return false;
+        };
+
+        self.transactions
+            .first()
+            .map(|coinbase| coinbase.recipient == expected_wallet)
+            .unwrap_or(false)
+    }
+
     fn total_transaction_fees(&self) -> f64 {
         self.normal_transactions()
             .iter()
@@ -754,6 +790,11 @@ impl Blockchain {
         if !block.has_known_public_miner(known_miner_peers) {
             return Err("received block reward miner is not a known public peer".to_string());
         }
+        if !block.has_expected_public_miner_reward() {
+            return Err(
+                "received block reward recipient does not match the public miner peer".to_string(),
+            );
+        }
 
         self.add_received_block(block)
     }
@@ -871,10 +912,10 @@ impl Blockchain {
     }
 
     fn has_only_known_public_miners(&self, known_miner_peers: &HashSet<String>) -> bool {
-        self.chain
-            .iter()
-            .skip(1)
-            .all(|block| block.has_known_public_miner(known_miner_peers))
+        self.chain.iter().skip(1).all(|block| {
+            block.has_known_public_miner(known_miner_peers)
+                && block.has_expected_public_miner_reward()
+        })
     }
 
     fn chain_score(&self) -> u128 {
@@ -2534,6 +2575,17 @@ fn normalize_peer_address(address: &str) -> Option<String> {
     }
 
     Some(socket_addr.to_string())
+}
+
+fn trusted_public_miner_reward_wallet(peer: &str) -> Option<&'static str> {
+    let peer = normalize_peer_address(peer)?;
+    TRUSTED_PUBLIC_MINER_REWARD_WALLETS
+        .iter()
+        .find_map(|(miner_peer, wallet)| {
+            normalize_peer_address(miner_peer)
+                .filter(|trusted_peer| trusted_peer == &peer)
+                .map(|_| *wallet)
+        })
 }
 
 fn connect_to_peer(peer: &str) -> Result<TcpStream, String> {

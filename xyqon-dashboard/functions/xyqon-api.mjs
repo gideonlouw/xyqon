@@ -9,16 +9,22 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = dirname(__dirname);
 const port = Number(process.env.XYQON_DASHBOARD_API_PORT ?? 4300);
-const defaultPeers = ['68.183.98.134:7101', '143.244.149.8:7101'];
+const defaultPeers = ['68.183.98.134:7101', '143.244.149.8:7101', '147.182.138.183:7101'];
 const genesisBlockHash = '000050e03846e2151e572a3d14ded847ca0e285cab344557fa4fde4e164914ff';
 const genesisTimestamp = 1_700_000_000;
 const emptyRewardBlockRejectionStartTimestamp = 1_780_732_800;
 const transactionFeeStartTimestamp = 1_780_747_200;
+const publicMinerRewardStartTimestamp = 1_780_747_200;
 const defaultTransactionFee = 0.001;
 const initialMiningReward = 10;
 const halvingInterval = 100_000;
 const maxCoinSupply = 67_000_000;
 const amountEpsilon = 0.000_000_01;
+const trustedMinerRewardWallets = new Map([
+  ['143.244.149.8:7101', '5a158b3821cc53e8838f02a4b7f2e7ec7849588907e18682fa982c3328eeec80'],
+  ['68.183.98.134:7101', '738dc51f2251240ad28fcbadb196b4bbe2868b90e1c63490af61104e5d3f4576'],
+  ['147.182.138.183:7101', '3346ff38cdb9a27bb403943b120da896a9799b1dc37438ac6a69be76394440fd']
+]);
 
 async function readConfiguredPeers() {
   const filePath = process.env.XYQON_PEERS_FILE ?? join(rootDir, 'peers.txt');
@@ -134,6 +140,18 @@ async function requestPeers(peer, timeoutMs = 2500) {
 
 function chainHasOnlyKnownMinerPeers(chain, knownMinerPeers) {
   return chain.chain.every((block) => !block.miner_peer || knownMinerPeers.has(normalizePeer(block.miner_peer)));
+}
+
+function chainHasExpectedMinerRewards(chain) {
+  return chain.chain.every((block) => {
+    if (!block.miner_peer || block.timestamp < publicMinerRewardStartTimestamp) {
+      return true;
+    }
+
+    const minerPeer = normalizePeer(block.miner_peer);
+    const expectedWallet = trustedMinerRewardWallets.get(minerPeer);
+    return Boolean(expectedWallet && block.transactions?.[0]?.recipient === expectedWallet);
+  });
 }
 
 async function validateDiscoveredPeer(peer, knownMinerPeers) {
@@ -482,12 +500,16 @@ async function getNetworkSnapshot() {
   const results = (await Promise.all(knownPeers.map((peer) => requestChain(peer)))).map((result) => {
     const validation = result.online ? validateChain(result.chain) : { ok: false, error: result.error };
     const minerPeersValid = validation.ok ? chainHasOnlyKnownMinerPeers(result.chain, new Set(knownPeers)) : false;
+    const minerRewardsValid = validation.ok ? chainHasExpectedMinerRewards(result.chain) : false;
     return {
       ...result,
-      chainValid: validation.ok && minerPeersValid,
-      validationError: validation.ok && !minerPeersValid
-        ? 'Chain includes unknown public miner peer rewards'
-        : validation.error
+      chainValid: validation.ok && minerPeersValid && minerRewardsValid,
+      validationError:
+        validation.ok && !minerPeersValid
+          ? 'Chain includes unknown public miner peer rewards'
+          : validation.ok && !minerRewardsValid
+            ? 'Chain includes public miner rewards paid to the wrong wallet'
+            : validation.error
     };
   });
 
