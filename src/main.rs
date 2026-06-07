@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -30,9 +30,11 @@ const HALVING_INTERVAL: u64 = 100_000;
 const MAX_COIN_SUPPLY: f64 = 67_000_000.0;
 const BALANCE_EPSILON: f64 = 0.000_000_01;
 const DEFAULT_PEER_PORT: u16 = 7101;
+const PEER_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const PEER_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const EMPTY_REWARD_BLOCK_REJECTION_START_TIMESTAMP: i64 = 1_780_732_800; // 2026-06-06T08:00:00Z
-const TRANSACTION_FEE_START_TIMESTAMP: i64 = 1_780_740_000; // 2026-06-06T10:00:00Z
-const PUBLIC_MINER_REWARD_START_TIMESTAMP: i64 = 1_780_740_000; // 2026-06-06T10:00:00Z
+const TRANSACTION_FEE_START_TIMESTAMP: i64 = 1_780_747_200; // 2026-06-06T12:00:00Z
+const PUBLIC_MINER_REWARD_START_TIMESTAMP: i64 = 1_780_747_200; // 2026-06-06T12:00:00Z
 const DEFAULT_XYQON_TRANSACTION_FEE: f64 = 0.001;
 const BOOTSTRAP_PUBLIC_MINER_PEERS: [&str; 4] = [
     "143.244.149.8:7101",
@@ -1319,13 +1321,18 @@ fn handle_peer_stream(
                     Err(error) => eprintln!("Rejected transaction {transaction_id}: {error}"),
                 }
             }
-            NetworkMessage::NewPeer(peer) => match peers.add(peer.clone()) {
-                Ok(true) => {
-                    println!("Discovered peer {peer}");
-                    broadcast_peer_to_peers(&peer, &peers);
+            NetworkMessage::NewPeer(peer) => match validate_announced_peer(&peer, &peers) {
+                Ok(peer) => match peers.add(peer.clone()) {
+                    Ok(true) => {
+                        println!("Discovered peer {peer}");
+                        broadcast_peer_to_peers(&peer, &peers);
+                    }
+                    Ok(false) => println!("Already know peer {peer}"),
+                    Err(error) => eprintln!("Rejected peer announcement {peer}: {error}"),
+                },
+                Err(error) => {
+                    eprintln!("Rejected peer announcement {peer}: {error}");
                 }
-                Ok(false) => println!("Already know peer {peer}"),
-                Err(error) => eprintln!("Rejected peer announcement {peer}: {error}"),
             },
             NetworkMessage::RequestChain => {
                 let response = blockchain
@@ -2487,7 +2494,7 @@ fn send_message_to_peers(message: &NetworkMessage, peers: &PeerBook, label: &str
     };
 
     for peer in peers.snapshot() {
-        match TcpStream::connect(&peer) {
+        match connect_to_peer(&peer) {
             Ok(mut stream) => {
                 if let Err(error) = writeln!(stream, "{serialized}") {
                     eprintln!("Failed to send {label} to {peer}: {error}");
@@ -2521,10 +2528,69 @@ fn normalize_peer_address(address: &str) -> Option<String> {
         return None;
     }
 
-    if address.contains(':') {
-        Some(address.to_string())
+    let address = if address.contains(':') {
+        address.to_string()
     } else {
-        Some(format!("{address}:{DEFAULT_PEER_PORT}"))
+        format!("{address}:{DEFAULT_PEER_PORT}")
+    };
+
+    let socket_addr = address.parse::<SocketAddr>().ok()?;
+    if socket_addr.port() == 0 {
+        return None;
+    }
+
+    Some(socket_addr.to_string())
+}
+
+fn connect_to_peer(peer: &str) -> Result<TcpStream, String> {
+    let socket_addr = peer
+        .parse::<SocketAddr>()
+        .map_err(|error| format!("invalid peer address: {error}"))?;
+    let stream = TcpStream::connect_timeout(&socket_addr, PEER_CONNECT_TIMEOUT)
+        .map_err(|error| format!("could not connect: {error}"))?;
+    stream
+        .set_read_timeout(Some(PEER_READ_TIMEOUT))
+        .map_err(|error| format!("could not set read timeout: {error}"))?;
+    stream
+        .set_write_timeout(Some(PEER_CONNECT_TIMEOUT))
+        .map_err(|error| format!("could not set write timeout: {error}"))?;
+    Ok(stream)
+}
+
+fn validate_announced_peer(peer: &str, peers: &PeerBook) -> Result<String, String> {
+    let peer =
+        normalize_peer_address(peer).ok_or_else(|| format!("invalid peer address: {peer}"))?;
+    if peer_book_is_local(&peers.local_addr, &peer)
+        || peers.snapshot().iter().any(|known| known == &peer)
+    {
+        return Ok(peer);
+    }
+
+    request_peers_from_peer(&peer)
+        .map(|_| peer)
+        .map_err(|error| format!("peer did not answer XYQON peer request: {error}"))
+}
+
+fn request_peers_from_peer(peer: &str) -> Result<Vec<String>, String> {
+    let mut stream = connect_to_peer(peer)?;
+    let request = serde_json::to_string(&NetworkMessage::RequestPeers)
+        .map_err(|error| format!("could not serialize peer request: {error}"))?;
+    writeln!(stream, "{request}").map_err(|error| format!("could not send request: {error}"))?;
+
+    let mut reader = BufReader::new(stream);
+    let mut response = String::new();
+    reader
+        .read_line(&mut response)
+        .map_err(|error| format!("could not read response: {error}"))?;
+
+    match serde_json::from_str::<NetworkMessage>(&response)
+        .map_err(|error| format!("could not parse response: {error}"))?
+    {
+        NetworkMessage::PeerResponse(peers) => Ok(peers
+            .into_iter()
+            .filter_map(|peer| normalize_peer_address(&peer))
+            .collect()),
+        _ => Err("peer did not return a peer response".to_string()),
     }
 }
 
@@ -2540,11 +2606,7 @@ fn peer_book_is_local(local_addr: &Option<String>, peer: &str) -> bool {
 }
 
 fn request_chain_from_peer(peer: &str) -> Result<Blockchain, String> {
-    let mut stream =
-        TcpStream::connect(peer).map_err(|error| format!("could not connect: {error}"))?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .map_err(|error| format!("could not set read timeout: {error}"))?;
+    let mut stream = connect_to_peer(peer)?;
 
     let request = serde_json::to_string(&NetworkMessage::RequestChain)
         .map_err(|error| format!("could not serialize chain request: {error}"))?;

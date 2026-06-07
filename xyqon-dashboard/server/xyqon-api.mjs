@@ -10,6 +10,15 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = dirname(__dirname);
 const port = Number(process.env.XYQON_DASHBOARD_API_PORT ?? 4300);
 const defaultPeers = ['68.183.98.134:7101', '143.244.149.8:7101', '147.182.138.183:7101'];
+const genesisBlockHash = '000050e03846e2151e572a3d14ded847ca0e285cab344557fa4fde4e164914ff';
+const genesisTimestamp = 1_700_000_000;
+const emptyRewardBlockRejectionStartTimestamp = 1_780_732_800;
+const transactionFeeStartTimestamp = 1_780_747_200;
+const defaultTransactionFee = 0.001;
+const initialMiningReward = 10;
+const halvingInterval = 100_000;
+const maxCoinSupply = 67_000_000;
+const amountEpsilon = 0.000_000_01;
 
 async function readConfiguredPeers() {
   const filePath = process.env.XYQON_PEERS_FILE ?? join(rootDir, 'peers.txt');
@@ -41,11 +50,31 @@ async function saveDiscoveredPeers(peers) {
 }
 
 function normalizePeer(peer) {
-  const value = peer.split('#')[0].trim();
+  const value = `${peer}`.split('#')[0].trim();
   if (!value) {
     return null;
   }
-  return value.includes(':') ? value : `${value}:7101`;
+  const normalized = value.includes(':') ? value : `${value}:7101`;
+  return isValidPeerAddress(normalized) ? normalized : null;
+}
+
+function isValidPeerAddress(peer) {
+  const match = peer.match(/^([a-z0-9.-]+):([0-9]{1,5})$/i);
+  if (!match) {
+    return false;
+  }
+
+  const [, host, portText] = match;
+  const portNumber = Number(portText);
+  if (!Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535) {
+    return false;
+  }
+
+  return (
+    host === 'localhost' ||
+    /^(?:\d{1,3}\.){3}\d{1,3}$/.test(host) ||
+    /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i.test(host)
+  );
 }
 
 function requestMessage(peer, messageName, responseKey, timeoutMs = 3500) {
@@ -134,6 +163,146 @@ function chainScore(chain) {
   return chain.chain
     .slice(1)
     .reduce((score, block) => score + 2 ** Math.min(block.difficulty, 52), 0);
+}
+
+function isFiniteNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function amountsEqual(left, right) {
+  return Math.abs(left - right) <= amountEpsilon;
+}
+
+function allowedMiningRewardForBlock(index, circulatingSupply) {
+  if (circulatingSupply >= maxCoinSupply) {
+    return 0;
+  }
+
+  const halvings = Math.floor((index - 1) / halvingInterval);
+  const reward = initialMiningReward / 2 ** halvings;
+  return Math.min(reward, maxCoinSupply - circulatingSupply);
+}
+
+function validateGenesisBlock(block) {
+  const [transaction] = Array.isArray(block?.transactions) ? block.transactions : [];
+  return (
+    block?.index === 0 &&
+    block.timestamp === genesisTimestamp &&
+    block.difficulty === 4 &&
+    block.previous_hash === '0' &&
+    block.hash === genesisBlockHash &&
+    block.nonce === 19850 &&
+    block.transactions.length === 1 &&
+    transaction?.sender === 'network' &&
+    transaction.recipient === 'genesis' &&
+    amountsEqual(transaction.amount, 0) &&
+    (transaction.fee ?? 0) === 0 &&
+    transaction.sender_public_key === '' &&
+    transaction.signature === ''
+  );
+}
+
+function validateNormalTransaction(transaction, blockTimestamp) {
+  if (!transaction || transaction.sender === 'network' || !transaction.recipient) {
+    return { ok: false, error: 'invalid transaction identity' };
+  }
+  if (!/^[0-9a-f]{64}$/i.test(transaction.sender_public_key ?? '')) {
+    return { ok: false, error: 'invalid transaction public key' };
+  }
+  if (!/^[0-9a-f]{128}$/i.test(transaction.signature ?? '')) {
+    return { ok: false, error: 'invalid transaction signature' };
+  }
+
+  const fee = transaction.fee ?? 0;
+  if (!isFiniteNumber(fee) || fee < 0) {
+    return { ok: false, error: 'invalid transaction fee' };
+  }
+
+  if (transaction.asset_operation) {
+    return amountsEqual(transaction.amount, 0) && amountsEqual(fee, 0)
+      ? { ok: true, fee: 0 }
+      : { ok: false, error: 'asset transaction has XYQON amount or fee' };
+  }
+
+  if (!isFiniteNumber(transaction.amount) || transaction.amount <= 0) {
+    return { ok: false, error: 'invalid transaction amount' };
+  }
+  if (blockTimestamp >= transactionFeeStartTimestamp && fee + amountEpsilon < defaultTransactionFee) {
+    return { ok: false, error: 'transaction fee below active minimum' };
+  }
+  return { ok: true, fee };
+}
+
+function validateChain(chain) {
+  if (!chain || !Array.isArray(chain.chain) || chain.chain.length === 0) {
+    return { ok: false, error: 'missing chain' };
+  }
+  if (!isFiniteNumber(chain.circulating_supply)) {
+    return { ok: false, error: 'missing circulating supply' };
+  }
+  if (!validateGenesisBlock(chain.chain[0])) {
+    return { ok: false, error: 'invalid genesis block' };
+  }
+
+  let circulatingSupply = 0;
+  for (let index = 1; index < chain.chain.length; index += 1) {
+    const block = chain.chain[index];
+    const previous = chain.chain[index - 1];
+    if (block?.index !== index || !Number.isInteger(block.timestamp)) {
+      return { ok: false, error: `invalid block ${index}` };
+    }
+    if (!Number.isInteger(block.difficulty) || block.difficulty < 1 || block.difficulty > 64) {
+      return { ok: false, error: `invalid block ${index} difficulty` };
+    }
+    if (block.previous_hash !== previous.hash || !/^[0-9a-f]{64}$/i.test(block.hash ?? '')) {
+      return { ok: false, error: `invalid block ${index} hash link` };
+    }
+    if (!block.hash.startsWith('0'.repeat(block.difficulty))) {
+      return { ok: false, error: `block ${index} does not satisfy proof of work` };
+    }
+    if (!Array.isArray(block.transactions) || block.transactions.length === 0) {
+      return { ok: false, error: `block ${index} has no coinbase transaction` };
+    }
+
+    const [coinbase, ...transactions] = block.transactions;
+    if (block.timestamp >= emptyRewardBlockRejectionStartTimestamp && transactions.length === 0) {
+      return { ok: false, error: `block ${index} has no active transaction` };
+    }
+    if (
+      coinbase?.sender !== 'network' ||
+      !coinbase.recipient ||
+      !isFiniteNumber(coinbase.amount) ||
+      (coinbase.fee ?? 0) !== 0 ||
+      coinbase.sender_public_key !== '' ||
+      coinbase.signature !== ''
+    ) {
+      return { ok: false, error: `invalid block ${index} coinbase` };
+    }
+
+    let fees = 0;
+    for (const transaction of transactions) {
+      const validation = validateNormalTransaction(transaction, block.timestamp);
+      if (!validation.ok) {
+        return { ok: false, error: validation.error };
+      }
+      fees += validation.fee;
+    }
+
+    const subsidy = allowedMiningRewardForBlock(index, circulatingSupply);
+    if (!amountsEqual(coinbase.amount, subsidy + fees)) {
+      return { ok: false, error: `invalid block ${index} reward` };
+    }
+    circulatingSupply += subsidy;
+    if (circulatingSupply > maxCoinSupply + amountEpsilon) {
+      return { ok: false, error: 'circulating supply exceeds maximum' };
+    }
+  }
+
+  if (!amountsEqual(circulatingSupply, chain.circulating_supply)) {
+    return { ok: false, error: 'circulating supply does not match chain' };
+  }
+
+  return { ok: true, error: null };
 }
 
 function buildBalances(chain) {
@@ -291,20 +460,29 @@ function flattenTransactions(chain) {
 async function getNetworkSnapshot() {
   const seedPeers = await readConfiguredPeers();
   const knownPeers = await discoverPeers(seedPeers);
-  const results = await Promise.all(knownPeers.map((peer) => requestChain(peer)));
-  const nodes = results.map((result) => ({
-    address: result.peer,
-    online: result.online,
-    latencyMs: result.latencyMs,
-    blockHeight: result.chain ? result.chain.chain.length - 1 : null,
-    chainScore: result.chain ? chainScore(result.chain) : 0,
-    circulatingSupply: result.chain?.circulating_supply ?? null,
-    error: result.error
-  }));
+  const results = (await Promise.all(knownPeers.map((peer) => requestChain(peer)))).map((result) => {
+    const validation = result.online ? validateChain(result.chain) : { ok: false, error: result.error };
+    return { ...result, chainValid: validation.ok, validationError: validation.error };
+  });
 
   const best = results
-    .filter((result) => result.chain)
+    .filter((result) => result.chainValid)
     .sort((a, b) => chainScore(b.chain) - chainScore(a.chain))[0];
+
+  const activeTipHash = best?.chain?.chain.at(-1)?.hash ?? null;
+  const nodes = results.map((result) => {
+    const tipHash = result.chainValid ? result.chain.chain.at(-1)?.hash : null;
+    const active = Boolean(activeTipHash && tipHash === activeTipHash);
+    return {
+      address: result.peer,
+      online: active,
+      latencyMs: result.latencyMs,
+      blockHeight: result.chainValid ? result.chain.chain.length - 1 : null,
+      chainScore: result.chainValid ? chainScore(result.chain) : 0,
+      circulatingSupply: result.chainValid ? result.chain.circulating_supply : null,
+      error: result.online ? (active ? null : result.validationError ?? 'Inactive chain tip') : result.error
+    };
+  });
 
   const chain = best?.chain ?? { chain: [], circulating_supply: 0 };
   return { knownPeers, seedPeers, results, nodes, best, chain };
