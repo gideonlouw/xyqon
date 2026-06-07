@@ -2567,8 +2567,17 @@ fn validate_announced_peer(peer: &str, peers: &PeerBook) -> Result<String, Strin
     }
 
     request_peers_from_peer(&peer)
-        .map(|_| peer)
-        .map_err(|error| format!("peer did not answer XYQON peer request: {error}"))
+        .map_err(|error| format!("peer did not answer XYQON peer request: {error}"))?;
+
+    let candidate = request_chain_from_peer(&peer)
+        .map_err(|error| format!("peer did not return a valid XYQON chain: {error}"))?;
+    let mut known_miner_peers = peers.known_public_miner_peers();
+    known_miner_peers.insert(peer.clone());
+    if !candidate.has_only_known_public_miners(&known_miner_peers) {
+        return Err("peer chain includes unknown public miner peer rewards".to_string());
+    }
+
+    Ok(peer)
 }
 
 fn request_peers_from_peer(peer: &str) -> Result<Vec<String>, String> {
