@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = dirname(__dirname);
 const port = Number(process.env.XYQON_DASHBOARD_API_PORT ?? 4300);
-const defaultPeers = ['68.183.98.134:7101', '143.244.149.8:7101', '147.182.138.183:7101'];
+const defaultPeers = ['68.183.98.134:7101', '143.244.149.8:7101'];
 const genesisBlockHash = '000050e03846e2151e572a3d14ded847ca0e285cab344557fa4fde4e164914ff';
 const genesisTimestamp = 1_700_000_000;
 const emptyRewardBlockRejectionStartTimestamp = 1_780_732_800;
@@ -132,6 +132,25 @@ async function requestPeers(peer, timeoutMs = 2500) {
   };
 }
 
+function chainHasOnlyKnownMinerPeers(chain, knownMinerPeers) {
+  return chain.chain.every((block) => !block.miner_peer || knownMinerPeers.has(normalizePeer(block.miner_peer)));
+}
+
+async function validateDiscoveredPeer(peer, knownMinerPeers) {
+  const result = await requestChain(peer, 2500);
+  if (!result.online || !result.chain) {
+    return false;
+  }
+
+  const validation = validateChain(result.chain);
+  if (!validation.ok) {
+    return false;
+  }
+
+  const trustedPeers = new Set([...knownMinerPeers, peer]);
+  return chainHasOnlyKnownMinerPeers(result.chain, trustedPeers);
+}
+
 async function discoverPeers(seedPeers) {
   const discovered = new Set(seedPeers);
   let frontier = seedPeers;
@@ -145,7 +164,7 @@ async function discoverPeers(seedPeers) {
       }
 
       for (const peer of response.peers) {
-        if (!discovered.has(peer)) {
+        if (!discovered.has(peer) && (await validateDiscoveredPeer(peer, discovered))) {
           discovered.add(peer);
           next.push(peer);
         }
@@ -462,7 +481,14 @@ async function getNetworkSnapshot() {
   const knownPeers = await discoverPeers(seedPeers);
   const results = (await Promise.all(knownPeers.map((peer) => requestChain(peer)))).map((result) => {
     const validation = result.online ? validateChain(result.chain) : { ok: false, error: result.error };
-    return { ...result, chainValid: validation.ok, validationError: validation.error };
+    const minerPeersValid = validation.ok ? chainHasOnlyKnownMinerPeers(result.chain, new Set(knownPeers)) : false;
+    return {
+      ...result,
+      chainValid: validation.ok && minerPeersValid,
+      validationError: validation.ok && !minerPeersValid
+        ? 'Chain includes unknown public miner peer rewards'
+        : validation.error
+    };
   });
 
   const best = results

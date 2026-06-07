@@ -36,12 +36,7 @@ const EMPTY_REWARD_BLOCK_REJECTION_START_TIMESTAMP: i64 = 1_780_732_800; // 2026
 const TRANSACTION_FEE_START_TIMESTAMP: i64 = 1_780_747_200; // 2026-06-06T12:00:00Z
 const PUBLIC_MINER_REWARD_START_TIMESTAMP: i64 = 1_780_747_200; // 2026-06-06T12:00:00Z
 const DEFAULT_XYQON_TRANSACTION_FEE: f64 = 0.001;
-const BOOTSTRAP_PUBLIC_MINER_PEERS: [&str; 4] = [
-    "143.244.149.8:7101",
-    "147.182.138.183:7101",
-    "185.29.89.24:7101",
-    "68.183.98.134:7101",
-];
+const BOOTSTRAP_PUBLIC_MINER_PEERS: [&str; 2] = ["143.244.149.8:7101", "68.183.98.134:7101"];
 
 fn is_zero_amount(amount: &f64) -> bool {
     amounts_equal(*amount, 0.0)
@@ -981,7 +976,6 @@ impl PeerBook {
             .filter_map(|peer| normalize_peer_address(peer))
             .collect();
 
-        peers.extend(self.snapshot());
         if let Some(local_addr) = self.local_addr.as_ref() {
             peers.insert(local_addr.clone());
         }
