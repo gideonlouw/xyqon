@@ -59,8 +59,9 @@ Nodes can load known peers from a newline-separated file. Each line may contain 
 Example `peers.txt`:
 
 ```text
-68.183.98.134
-143.244.149.8
+143.244.149.8:7101
+68.183.98.134:7101
+147.182.138.183:7101
 ```
 
 Start a node with the file:
@@ -73,13 +74,17 @@ xyqon node \
   --chain /var/lib/xyqon/xyqon-chain.json
 ```
 
-When a node starts with `--advertise`, it announces that public address to the peers it already knows. Peers that receive the announcement add the new address to their in-memory peer list, save it back to their peer file, and forward the announcement to the rest of their known peers.
+When a node starts with `--advertise`, it announces that public address to the peers it already knows. Peers that receive the announcement validate the address and check that the announced server responds like a XYQON peer before saving it or forwarding it.
 
 This means a new node joins by:
 
 1. Adding at least one existing public node to its peer file.
 2. Starting with `--peers-file`.
 3. Starting with `--advertise NEW_NODE_PUBLIC_IP:7101`.
+
+Do not add public DNS servers, test IPs, or unrelated hosts such as `1.1.1.1:7101` or `8.8.8.8:7101` to `peers.txt`. A peer should be a reachable XYQON node listening on TCP port `7101`.
+
+Peer discovery and mining rewards are separate trust decisions. A discovered node can relay chain and transaction data, but new public miners should be added deliberately. Before allowing a new public server to mine rewards, add its `IP:PORT` to the trusted public miner list in code, rebuild, and redeploy the public nodes.
 
 ## Create A Wallet
 
@@ -140,8 +145,9 @@ The node keeps running, accepts valid blocks and transactions, syncs from known 
 Create or edit `/etc/xyqon/peers.txt` on the new server:
 
 ```text
-68.183.98.134
-143.244.149.8
+143.244.149.8:7101
+68.183.98.134:7101
+147.182.138.183:7101
 ```
 
 Start the new node:
@@ -155,6 +161,23 @@ xyqon node \
 ```
 
 On startup, the joining node requests chains from known peers and adopts a valid chain with more accumulated work. It also announces its own public address so other running nodes can discover it.
+
+Use this flow for a new relay node first. After it is reachable and visible to the existing network, decide separately whether it should become a public miner.
+
+## Add A Public Miner
+
+Use `mine` only on servers that should compete for block rewards. Public miner membership is intentionally stricter than peer discovery so invalid announced peers cannot claim mining rewards.
+
+To add a new public miner:
+
+1. Run it as a normal public node first and confirm it responds on `NEW_NODE_PUBLIC_IP:7101`.
+2. Confirm its `peers.txt` contains only real XYQON peers.
+3. Confirm it has synced to the current valid chain.
+4. Add `NEW_NODE_PUBLIC_IP:7101` to the trusted public miner list in `src/main.rs`.
+5. Rebuild and redeploy the binary on all public mining nodes.
+6. Start the new server with `xyqon mine --advertise NEW_NODE_PUBLIC_IP:7101`.
+
+If a miner reward block advertises an unknown or invalid `miner_peer`, other nodes should reject that chain instead of syncing to it.
 
 ## Submit A Transaction
 
@@ -243,6 +266,8 @@ xyqon mine \
 
 The miner keeps syncing with peers, relays valid network messages, and tries to mine when transactions are waiting. The reward goes to whichever miner finds and broadcasts the accepted block. Mined blocks must include at least one normal transaction.
 
+Miners do not create empty reward-only blocks. If logs show `No pending transactions; waiting for work`, submit a signed transaction first; the next block will be mined only when there is work in the mempool.
+
 The default mempool file is based on the chain path:
 
 ```text
@@ -267,7 +292,7 @@ RequestPeers
 PeerResponse(Vec<String>)
 ```
 
-When a node receives a peer announcement, it validates the address format, adds the peer if it is new, saves it to the configured peer file, and forwards the announcement to known peers.
+When a node receives a peer announcement, it validates the address format and checks that the peer answers XYQON network requests before saving or forwarding the address. This prevents unrelated hosts from polluting `peers.txt`.
 Dashboards and other tools can also request a node's known peers with `RequestPeers`, then crawl from those seed nodes to discover more of the network.
 
 When a node receives a transaction, it checks the signature, rejects duplicates, stores the transaction in its mempool, and shares it with peers. Transactions are checked against confirmed balances plus pending spends.
@@ -282,12 +307,15 @@ When a node receives a block, it checks:
 - The total coin supply does not exceed 67,000,000 XYQON
 - Every normal transaction signature is valid
 - Every normal transaction has enough confirmed balance to spend
+- Public miner reward blocks identify a known public miner peer
 
 If the block is accepted, the node appends it to its local chain, saves it, removes confirmed transactions from the mempool, and shares the block with known peers.
 
 ## Current Operational Notes
 
 - Keep `/etc/xyqon/peers.txt` writable by the `xyqon` service user so discovered peers can be saved.
+- Keep public node `peers.txt` files clean. They should contain only reachable XYQON nodes.
+- If an invalid peer or invalid public miner reward enters the network, stop miners, clean `peers.txt`, roll back to the last shared valid block, clear mempools, redeploy the patched binary, and restart from the clean chain.
 - Wallet files are plain JSON and are not encrypted.
 - `node` does not mine. Use `submit` to send funds and `mine` to compete for rewards.
 - The mempool is persisted to disk and reloaded on startup.
