@@ -1,6 +1,7 @@
 /target
 /target-codex
 /target-codex-check
+/.codex
 *.wallet.json
 wallet.json
 xyqon-chain.json
@@ -18,3 +19,5 @@ firebase-debug.log
 firestore-debug.log
 ui-debug.log
 xyqon-dashboard/src/environments/firebase-config.local.ts
+xyqon-dashboard/dist-deploy/
+xyqon-dashboard/out-tsc/

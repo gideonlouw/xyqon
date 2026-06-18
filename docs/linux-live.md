@@ -86,6 +86,14 @@ chmod 664 /etc/xyqon/peers.txt
 
 On a new node, include at least one existing reachable node in this file. The new node will announce itself to those peers when it starts.
 
+Create the trusted miner file from the packaged example:
+
+```bash
+cp /opt/xyqon/deploy/trusted-miners.example.json /etc/xyqon/trusted-miners.json
+chown xyqon:xyqon /etc/xyqon/trusted-miners.json
+chmod 664 /etc/xyqon/trusted-miners.json
+```
+
 ## 7. Start A Public Node Manually
 
 Replace `YOUR_SERVER_IP` with the server's public IPv4 address:
@@ -95,6 +103,7 @@ xyqon node \
   --listen 0.0.0.0:7101 \
   --advertise YOUR_SERVER_IP:7101 \
   --peers-file /etc/xyqon/peers.txt \
+  --trusted-miners-file /etc/xyqon/trusted-miners.json \
   --chain /var/lib/xyqon/xyqon-chain.json
 ```
 
@@ -151,6 +160,7 @@ xyqon node \
   --listen 0.0.0.0:7101 \
   --advertise NEW_NODE_PUBLIC_IP:7101 \
   --peers-file /etc/xyqon/peers.txt \
+  --trusted-miners-file /etc/xyqon/trusted-miners.json \
   --chain /var/lib/xyqon/xyqon-chain.json
 ```
 
@@ -178,13 +188,29 @@ xyqon wallet export --wallet /var/lib/xyqon/miner.wallet.json
 
 Keep wallet files private.
 
-## 11. Run A Miner
+## 11. Add A Trusted Miner
+
+After the new server has joined as a normal node and synced, run this on an existing trusted server:
+
+```bash
+xyqon miner add-trusted \
+  --trusted-miners-file /etc/xyqon/trusted-miners.json \
+  --peer NEW_NODE_PUBLIC_IP:7101 \
+  --wallet NEW_MINER_PUBLIC_WALLET
+```
+
+Copy the updated `/etc/xyqon/trusted-miners.json` to every public mining node before the new server starts mining. The command refuses to change the reward wallet for a peer that is already trusted.
+
+Each server writes `/etc/xyqon/trusted-miners.json.lock` after accepting the trusted file. If someone later changes a previously accepted miner wallet or removes a trusted miner from the JSON file, that server rejects the file on startup.
+
+## 12. Run A Miner
 
 ```bash
 xyqon mine \
   --listen 0.0.0.0:7101 \
   --advertise YOUR_SERVER_IP:7101 \
   --peers-file /etc/xyqon/peers.txt \
+  --trusted-miners-file /etc/xyqon/trusted-miners.json \
   --wallet /var/lib/xyqon/miner.wallet.json \
   --chain /var/lib/xyqon/xyqon-chain.json
 ```
@@ -205,7 +231,7 @@ xyqon wallet balance \
   --chain /var/lib/xyqon/xyqon-chain.json
 ```
 
-## 12. Submit A Transaction
+## 13. Submit A Transaction
 
 This signs and broadcasts a transaction without mining a block:
 
@@ -218,7 +244,7 @@ xyqon submit \
   --chain /var/lib/xyqon/xyqon-chain.json
 ```
 
-## 13. Verify Public Reachability
+## 14. Verify Public Reachability
 
 From your local machine or another server:
 

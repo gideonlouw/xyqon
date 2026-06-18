@@ -276,6 +276,199 @@ const firebaseRuntime = loadFirebaseRuntime();
               <p>Mint collectibles, game items, art, or membership badges and transfer ownership through signed transactions.</p>
             </article>
           </div>
+
+          <section class="package-docs" aria-labelledby="package-docs-title">
+            <header class="package-docs-header">
+              <div>
+                <p class="eyebrow">NPM PACKAGE</p>
+                <h2 id="package-docs-title">XYQON Client</h2>
+                <p>Friendly wallet CLI and JavaScript client for the live XYQON network.</p>
+              </div>
+              <a class="secondary-action" href="https://www.npmjs.com/package/xyqon" target="_blank" rel="noopener">
+                View on npm
+              </a>
+            </header>
+
+            <div class="package-docs-layout">
+              <aside class="package-summary" aria-label="Package details">
+                <dl>
+                  <div>
+                    <dt>Version</dt>
+                    <dd>0.4.0</dd>
+                  </div>
+                  <div>
+                    <dt>License</dt>
+                    <dd>MIT</dd>
+                  </div>
+                  <div>
+                    <dt>Node.js</dt>
+                    <dd>20 or newer</dd>
+                  </div>
+                </dl>
+
+                <h3>What it can do</h3>
+                <ul>
+                  <li>Generate a new XYQON wallet</li>
+                  <li>Show your public key</li>
+                  <li>Check balances from live public nodes</li>
+                  <li>Send signed transactions</li>
+                  <li>Create and send coins</li>
+                  <li>Mint and transfer NFTs</li>
+                  <li>Show currently reachable nodes</li>
+                </ul>
+                <p>You do not need to mine or run a full node.</p>
+
+                <nav class="package-links" aria-label="Package links">
+                  <a href="https://github.com/gideonlouw/xyqon" target="_blank" rel="noopener">Repository</a>
+                  <a href="https://github.com/gideonlouw/xyqon/issues" target="_blank" rel="noopener">Report an issue</a>
+                </nav>
+              </aside>
+
+              <article class="package-readme">
+                <section>
+                  <h3>Install</h3>
+                  <pre><code>npm install -g xyqon</code></pre>
+                  <p>Or run the command-line client without installing it globally:</p>
+                  <pre><code>npx xyqon help</code></pre>
+                </section>
+
+                <section>
+                  <h3>Create a wallet</h3>
+                  <pre><code>xyqon wallet new --name Cathy</code></pre>
+                  <p>This creates <code>xyqon.wallet.json</code>. Keep this file private because it contains your private key.</p>
+                </section>
+
+                <section>
+                  <h3>Show your address</h3>
+                  <pre><code>xyqon wallet show</code></pre>
+                </section>
+
+                <section>
+                  <h3>Check balance</h3>
+                  <pre><code>xyqon balance</code></pre>
+                  <p>Use a custom wallet path:</p>
+                  <pre><code>xyqon balance --wallet ./cathy.wallet.json</code></pre>
+                </section>
+
+                <section>
+                  <h3>Send XYQON</h3>
+                  <pre><code>xyqon send \
+  --to RECIPIENT_PUBLIC_KEY \
+  --amount 1</code></pre>
+                  <p>The transaction is broadcast to reachable public nodes. A miner must include it in a block before the receiver sees the confirmed balance.</p>
+                  <p>The client checks the best reachable public chain before broadcasting and refuses sends that exceed the wallet's confirmed XYQON balance.</p>
+                </section>
+
+                <section>
+                  <h3>Create and send coins</h3>
+                  <pre><code>xyqon coin create \
+  --symbol GAME \
+  --name "Game Coin" \
+  --supply 1000000
+
+xyqon coin send \
+  --symbol GAME \
+  --to RECIPIENT_PUBLIC_KEY \
+  --amount 25</code></pre>
+                  <p>Coin creation and coin sends are signed 0 XYQON transactions. A miner must include them before the new coin or transfer appears on-chain.</p>
+                  <p>Before broadcasting a coin transfer, the client checks the best reachable public chain and refuses sends that exceed the wallet's confirmed coin balance.</p>
+                </section>
+
+                <section>
+                  <h3>Mint and send NFTs</h3>
+                  <pre><code>xyqon nft mint \
+  --collection ITEMS \
+  --token-id sword-001 \
+  --name "Iron Sword" \
+  --image-url https://example.com/iron-sword.png
+
+xyqon nft send \
+  --collection ITEMS \
+  --token-id sword-001 \
+  --to RECIPIENT_PUBLIC_KEY</code></pre>
+                </section>
+
+                <section>
+                  <h3>Show nodes</h3>
+                  <pre><code>xyqon nodes</code></pre>
+                </section>
+
+                <section>
+                  <h3>Seed nodes</h3>
+                  <p>The package starts with these seed nodes:</p>
+                  <pre><code>68.183.98.134:7101
+143.244.149.8:7101
+147.182.138.183:7101</code></pre>
+                  <p>You can override them:</p>
+                  <pre><code>xyqon balance --peer 68.183.98.134:7101 --peer 143.244.149.8:7101</code></pre>
+                </section>
+
+                <section>
+                  <h3>JavaScript usage</h3>
+                  <pre><code>import &#123;
+  createWallet,
+  loadWallet,
+  getBalance,
+  sendTransaction,
+  createCoin,
+  sendCoin,
+  mintNft,
+  transferNft,
+  getCreatedCoins,
+  getCreatedNfts,
+  getOwnedNfts,
+  getCoinHoldings
+&#125; from 'xyqon';
+
+const wallet = createWallet('Cathy');
+console.log(wallet.public_key);
+
+const balance = await getBalance(wallet.public_key);
+console.log(balance);
+
+await sendTransaction(&#123;
+  wallet,
+  recipient: 'RECIPIENT_PUBLIC_KEY',
+  amount: 1
+&#125;);
+
+await createCoin(&#123;
+  wallet,
+  symbol: 'GAME',
+  name: 'Game Coin',
+  supply: 1000000
+&#125;);
+
+await sendCoin(&#123;
+  wallet,
+  recipient: 'RECIPIENT_PUBLIC_KEY',
+  symbol: 'GAME',
+  amount: 25
+&#125;);
+
+await mintNft(&#123;
+  wallet,
+  collection: 'ITEMS',
+  tokenId: 'sword-001',
+  name: 'Iron Sword',
+  imageUrl: 'https://example.com/iron-sword.png'
+&#125;);
+
+await transferNft(&#123;
+  wallet,
+  recipient: 'RECIPIENT_PUBLIC_KEY',
+  collection: 'ITEMS',
+  tokenId: 'sword-001'
+&#125;);
+
+const createdCoins = await getCreatedCoins(wallet);
+const createdNfts = await getCreatedNfts(wallet);
+const ownedNfts = await getOwnedNfts(wallet);
+const coinHoldings = await getCoinHoldings(wallet);</code></pre>
+                </section>
+              </article>
+            </div>
+          </section>
         </section>
       }
 

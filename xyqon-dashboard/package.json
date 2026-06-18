@@ -24,7 +24,7 @@
     "start:web": "ng serve --host 127.0.0.1 --port 4200",
     "build": "ng build",
     "deploy": "npm run deploy:hosting",
-    "deploy:hosting": "npm run build && firebase deploy --only hosting",
+    "deploy:hosting": "npm run build && firebase deploy --only hosting --project xyqon-c1dc7",
     "deploy:functions": "firebase deploy --only functions",
     "deploy:rules": "firebase deploy --only firestore:rules",
     "test:api": "node server/xyqon-api.mjs --once"

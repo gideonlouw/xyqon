@@ -71,6 +71,7 @@ xyqon node \
   --listen 0.0.0.0:7101 \
   --advertise YOUR_PUBLIC_IP:7101 \
   --peers-file /etc/xyqon/peers.txt \
+  --trusted-miners-file /etc/xyqon/trusted-miners.json \
   --chain /var/lib/xyqon/xyqon-chain.json
 ```
 
@@ -84,7 +85,9 @@ This means a new node joins by:
 
 Do not add public DNS servers, test IPs, or unrelated hosts such as `1.1.1.1:7101` or `8.8.8.8:7101` to `peers.txt`. A peer should be a reachable XYQON node listening on TCP port `7101`.
 
-Peer discovery and mining rewards are separate trust decisions. A discovered node can relay chain and transaction data, but new public miners should be added deliberately. Before allowing a new public server to mine rewards, add its `IP:PORT` to the trusted public miner list in code, rebuild, and redeploy the public nodes.
+Peer discovery and mining rewards are separate trust decisions. A discovered node can relay chain and transaction data, but new public miners should be added deliberately. Before allowing a new public server to mine rewards, add its `IP:PORT` and reward wallet to the shared trusted miners file and copy that file to the public mining nodes.
+
+Use `deploy/trusted-miners.example.json` as the starting `/etc/xyqon/trusted-miners.json` file for public nodes.
 
 ## Create A Wallet
 
@@ -135,6 +138,7 @@ xyqon node \
   --listen 0.0.0.0:7101 \
   --advertise 68.183.98.134:7101 \
   --peers-file /etc/xyqon/peers.txt \
+  --trusted-miners-file /etc/xyqon/trusted-miners.json \
   --chain /var/lib/xyqon/xyqon-chain.json
 ```
 
@@ -157,6 +161,7 @@ xyqon node \
   --listen 0.0.0.0:7101 \
   --advertise NEW_NODE_PUBLIC_IP:7101 \
   --peers-file /etc/xyqon/peers.txt \
+  --trusted-miners-file /etc/xyqon/trusted-miners.json \
   --chain /var/lib/xyqon/xyqon-chain.json
 ```
 
@@ -173,11 +178,24 @@ To add a new public miner:
 1. Run it as a normal public node first and confirm it responds on `NEW_NODE_PUBLIC_IP:7101`.
 2. Confirm its `peers.txt` contains only real XYQON peers.
 3. Confirm it has synced to the current valid chain.
-4. Add `NEW_NODE_PUBLIC_IP:7101` to the trusted public miner list in `src/main.rs`.
-5. Rebuild and redeploy the binary on all public mining nodes.
-6. Start the new server with `xyqon mine --advertise NEW_NODE_PUBLIC_IP:7101`.
+4. Ask the operator for the public key that should receive mining rewards.
+5. On an existing trusted server, validate and append the miner:
+
+```bash
+xyqon miner add-trusted \
+  --trusted-miners-file /etc/xyqon/trusted-miners.json \
+  --peer NEW_NODE_PUBLIC_IP:7101 \
+  --wallet NEW_MINER_PUBLIC_WALLET
+```
+
+6. Copy the updated `/etc/xyqon/trusted-miners.json` to every public mining node.
+7. Start the new server with `xyqon mine --advertise NEW_NODE_PUBLIC_IP:7101 --trusted-miners-file /etc/xyqon/trusted-miners.json`.
 
 If a miner reward block advertises an unknown or invalid `miner_peer`, other nodes should reject that chain instead of syncing to it.
+
+The trusted miner file is append-only by default. If an existing peer is already assigned to a reward wallet, `miner add-trusted` refuses to replace that wallet. This protects existing miners from someone changing their payment address in the shared file.
+
+Each server also writes a local `/etc/xyqon/trusted-miners.json.lock` snapshot after loading the trusted file. On later starts, the node rejects the trusted file if a previously accepted peer is missing or has a different reward wallet.
 
 ## Submit A Transaction
 
@@ -260,6 +278,7 @@ xyqon mine \
   --listen 0.0.0.0:7101 \
   --advertise YOUR_PUBLIC_IP:7101 \
   --peers-file /etc/xyqon/peers.txt \
+  --trusted-miners-file /etc/xyqon/trusted-miners.json \
   --wallet miner.wallet.json \
   --chain /var/lib/xyqon/xyqon-chain.json
 ```

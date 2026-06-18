@@ -378,6 +378,180 @@ a {
   line-height: 1.55;
 }
 
+.package-docs {
+  margin-top: 52px;
+  border-top: 1px solid #dbe4ea;
+  padding-top: 38px;
+}
+
+.package-docs-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 24px;
+}
+
+.package-docs-header h2 {
+  margin: 4px 0 8px;
+  color: #101820;
+  font-size: clamp(32px, 4vw, 48px);
+  line-height: 1.05;
+}
+
+.package-docs-header > div > p:last-child {
+  margin: 0;
+  color: #496170;
+  font-size: 17px;
+}
+
+.secondary-action {
+  flex: 0 0 auto;
+  border: 1px solid #168bd1;
+  border-radius: 6px;
+  color: #0878bc;
+  font-weight: 800;
+  padding: 11px 16px;
+  text-decoration: none;
+}
+
+.secondary-action:hover {
+  background: #f0f8fd;
+}
+
+.package-docs-layout {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 28px;
+  align-items: start;
+}
+
+.package-summary {
+  position: sticky;
+  top: 20px;
+  border: 1px solid #dbe4ea;
+  border-radius: 8px;
+  background: #fff;
+  padding: 20px;
+}
+
+.package-summary dl {
+  display: grid;
+  gap: 12px;
+  margin: 0 0 24px;
+}
+
+.package-summary dl div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid #edf2f5;
+  padding-bottom: 10px;
+}
+
+.package-summary dt {
+  color: #647987;
+}
+
+.package-summary dd {
+  margin: 0;
+  color: #17384b;
+  font-weight: 800;
+}
+
+.package-summary h3,
+.package-readme h3 {
+  color: #101820;
+}
+
+.package-summary h3 {
+  margin: 0 0 10px;
+  font-size: 17px;
+}
+
+.package-summary ul {
+  margin: 0 0 18px;
+  padding-left: 19px;
+  color: #496170;
+  line-height: 1.65;
+}
+
+.package-summary li::marker {
+  color: #168bd1;
+}
+
+.package-summary > p {
+  color: #647987;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.package-links {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid #edf2f5;
+  margin-top: 18px;
+  padding-top: 16px;
+}
+
+.package-links a {
+  color: #0878bc;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.package-links a:hover {
+  text-decoration: underline;
+}
+
+.package-readme {
+  min-width: 0;
+  border: 1px solid #dbe4ea;
+  border-radius: 8px;
+  background: #fff;
+  padding: clamp(22px, 4vw, 42px);
+}
+
+.package-readme section + section {
+  border-top: 1px solid #edf2f5;
+  margin-top: 30px;
+  padding-top: 30px;
+}
+
+.package-readme h3 {
+  margin: 0 0 14px;
+  font-size: 24px;
+}
+
+.package-readme p {
+  color: #496170;
+  line-height: 1.65;
+}
+
+.package-readme p code {
+  border-radius: 4px;
+  background: #edf4f8;
+  color: #17384b;
+  padding: 2px 5px;
+}
+
+.package-readme pre {
+  max-width: 100%;
+  margin: 14px 0;
+  border: 1px solid #d8e3eb;
+  border-radius: 6px;
+  background: #f8fafc;
+  overflow-x: auto;
+  padding: 16px;
+}
+
+.package-readme pre code {
+  color: #17384b;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 .page-intro {
   display: grid;
   gap: 12px;
@@ -1070,8 +1244,13 @@ i {
   .shop-summary,
   .node-grid,
   .product-grid,
-  .developer-grid {
+  .developer-grid,
+  .package-docs-layout {
     grid-template-columns: 1fr;
+  }
+
+  .package-summary {
+    position: static;
   }
 
   .product-card {
@@ -1122,7 +1301,8 @@ i {
   }
 
   .topbar,
-  .panel-head {
+  .panel-head,
+  .package-docs-header {
     align-items: flex-start;
     flex-direction: column;
   }
