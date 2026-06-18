@@ -195,11 +195,13 @@ After the new server has joined as a normal node and synced, run this on an exis
 ```bash
 xyqon miner add-trusted \
   --trusted-miners-file /etc/xyqon/trusted-miners.json \
+  --approver-wallet /var/lib/xyqon/miner.wallet.json \
+  --peers-file /etc/xyqon/peers.txt \
   --peer NEW_NODE_PUBLIC_IP:7101 \
   --wallet NEW_MINER_PUBLIC_WALLET
 ```
 
-Copy the updated `/etc/xyqon/trusted-miners.json` to every public mining node before the new server starts mining. The command refuses to change the reward wallet for a peer that is already trusted.
+The approving server signs the new mapping and broadcasts it to known peers. Running nodes accept and save it only if it was signed by a current trusted miner wallet. The command refuses to change the reward wallet for a peer that is already trusted.
 
 Each server writes `/etc/xyqon/trusted-miners.json.lock` after accepting the trusted file. If someone later changes a previously accepted miner wallet or removes a trusted miner from the JSON file, that server rejects the file on startup.
 

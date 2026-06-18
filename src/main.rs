@@ -57,9 +57,83 @@ struct TrustedMinerEntry {
     reward_wallet: String,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct TrustedMinerAnnouncement {
+    peer: String,
+    reward_wallet: String,
+    approver_public_key: String,
+    signature: String,
+}
+
+impl TrustedMinerAnnouncement {
+    fn new(peer: &str, reward_wallet: &str, approver_wallet: &WalletFile) -> Result<Self, String> {
+        let peer = normalize_peer_address(peer)
+            .ok_or_else(|| format!("invalid trusted miner peer address: {peer}"))?;
+        let reward_wallet = normalize_public_wallet(reward_wallet)?;
+        let signing_key = approver_wallet.signing_key()?;
+        let approver_public_key = bytes_to_hex(signing_key.verifying_key().as_bytes());
+        if approver_public_key != approver_wallet.public_key {
+            return Err("approver wallet public key does not match its private key".to_string());
+        }
+        let signature = signing_key.sign(
+            TrustedMinerAnnouncement::payload(&peer, &reward_wallet, &approver_public_key)
+                .as_bytes(),
+        );
+
+        Ok(TrustedMinerAnnouncement {
+            peer,
+            reward_wallet,
+            approver_public_key,
+            signature: bytes_to_hex(&signature.to_bytes()),
+        })
+    }
+
+    fn payload(peer: &str, reward_wallet: &str, approver_public_key: &str) -> String {
+        format!("trusted-miner|{peer}|{reward_wallet}|{approver_public_key}")
+    }
+
+    fn normalized(&self) -> Result<Self, String> {
+        Ok(TrustedMinerAnnouncement {
+            peer: normalize_peer_address(&self.peer)
+                .ok_or_else(|| format!("invalid trusted miner peer address: {}", self.peer))?,
+            reward_wallet: normalize_public_wallet(&self.reward_wallet)?,
+            approver_public_key: normalize_public_wallet(&self.approver_public_key)?,
+            signature: self.signature.trim().to_ascii_lowercase(),
+        })
+    }
+
+    fn verify_signature(&self) -> bool {
+        let Ok(announcement) = self.normalized() else {
+            return false;
+        };
+        let Some(public_key_bytes) = hex_to_array::<32>(&announcement.approver_public_key) else {
+            return false;
+        };
+        let Some(signature_bytes) = hex_to_array::<64>(&announcement.signature) else {
+            return false;
+        };
+        let Ok(public_key) = VerifyingKey::from_bytes(&public_key_bytes) else {
+            return false;
+        };
+        let signature = Signature::from_bytes(&signature_bytes);
+        public_key
+            .verify(
+                TrustedMinerAnnouncement::payload(
+                    &announcement.peer,
+                    &announcement.reward_wallet,
+                    &announcement.approver_public_key,
+                )
+                .as_bytes(),
+                &signature,
+            )
+            .is_ok()
+    }
+}
+
 #[derive(Debug, Clone)]
 struct TrustedMinerRegistry {
-    miners: Arc<BTreeMap<String, String>>,
+    miners: Arc<Mutex<BTreeMap<String, String>>>,
+    file_path: Option<Arc<String>>,
 }
 
 impl TrustedMinerRegistry {
@@ -88,17 +162,70 @@ impl TrustedMinerRegistry {
         }
 
         Ok(TrustedMinerRegistry {
-            miners: Arc::new(miners),
+            miners: Arc::new(Mutex::new(miners)),
+            file_path: path.map(|path| Arc::new(path.to_string())),
         })
     }
 
     fn known_peers(&self) -> HashSet<String> {
-        self.miners.keys().cloned().collect()
+        self.miners
+            .lock()
+            .map(|miners| miners.keys().cloned().collect())
+            .unwrap_or_default()
     }
 
-    fn reward_wallet_for_peer(&self, peer: &str) -> Option<&str> {
+    fn reward_wallet_for_peer(&self, peer: &str) -> Option<String> {
         let peer = normalize_peer_address(peer)?;
-        self.miners.get(&peer).map(String::as_str)
+        self.miners
+            .lock()
+            .ok()
+            .and_then(|miners| miners.get(&peer).cloned())
+    }
+
+    fn contains_reward_wallet(&self, reward_wallet: &str) -> bool {
+        let Ok(reward_wallet) = normalize_public_wallet(reward_wallet) else {
+            return false;
+        };
+        self.miners
+            .lock()
+            .map(|miners| miners.values().any(|wallet| wallet == &reward_wallet))
+            .unwrap_or(false)
+    }
+
+    fn apply_announcement(&self, announcement: &TrustedMinerAnnouncement) -> Result<bool, String> {
+        let announcement = announcement.normalized()?;
+        if !announcement.verify_signature() {
+            return Err("trusted miner announcement signature is invalid".to_string());
+        }
+        if !self.contains_reward_wallet(&announcement.approver_public_key) {
+            return Err(
+                "trusted miner announcement was not signed by a current trusted miner wallet"
+                    .to_string(),
+            );
+        }
+
+        let added = {
+            let mut miners = self
+                .miners
+                .lock()
+                .map_err(|_| "trusted miner registry lock was poisoned".to_string())?;
+            insert_trusted_miner(&mut miners, &announcement.peer, &announcement.reward_wallet)?
+        };
+
+        self.persist()?;
+        Ok(added)
+    }
+
+    fn persist(&self) -> Result<(), String> {
+        let Some(path) = self.file_path.as_deref() else {
+            return Ok(());
+        };
+        let miners = self
+            .miners
+            .lock()
+            .map_err(|_| "trusted miner registry lock was poisoned".to_string())?;
+        save_trusted_miner_file(path, &miners)?;
+        save_trusted_miner_lock(path, &miners)
     }
 }
 
@@ -198,6 +325,21 @@ fn save_trusted_miner_lock(path: &str, miners: &BTreeMap<String, String>) -> Res
         .map_err(|error| format!("failed to serialize trusted miners lock file: {error}"))?;
     fs::write(&lock_path, format!("{contents}\n"))
         .map_err(|error| format!("failed to save trusted miners lock file: {error}"))
+}
+
+fn save_trusted_miner_file(path: &str, miners: &BTreeMap<String, String>) -> Result<(), String> {
+    if let Some(parent) = Path::new(path).parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("failed to create trusted miners directory: {error}"))?;
+        }
+    }
+
+    let entries = trusted_miner_entries_from_map(miners);
+    let contents = serde_json::to_string_pretty(&entries)
+        .map_err(|error| format!("failed to serialize trusted miners: {error}"))?;
+    fs::write(path, format!("{contents}\n"))
+        .map_err(|error| format!("failed to save trusted miners file: {error}"))
 }
 
 fn is_zero_amount(amount: &f64) -> bool {
@@ -1081,6 +1223,7 @@ enum NetworkMessage {
     NewBlock(Block),
     NewTransaction(Transaction),
     NewPeer(String),
+    TrustedMinerAnnouncement(TrustedMinerAnnouncement),
     RequestChain,
     ChainResponse(Blockchain),
     RequestPeers,
@@ -1535,6 +1678,30 @@ fn handle_peer_stream(
                     }
                 }
             }
+            NetworkMessage::TrustedMinerAnnouncement(announcement) => {
+                let announced_peer = announcement.peer.clone();
+                match validate_trusted_miner_announcement(&announcement, &trusted_miners) {
+                    Ok(()) => match trusted_miners.apply_announcement(&announcement) {
+                        Ok(true) => {
+                            println!("Accepted trusted miner announcement for {announced_peer}");
+                            broadcast_trusted_miner_announcement_to_peers(&announcement, &peers);
+                        }
+                        Ok(false) => {
+                            println!("Already trust miner {announced_peer}");
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "Rejected trusted miner announcement for {announced_peer}: {error}"
+                            );
+                        }
+                    },
+                    Err(error) => {
+                        eprintln!(
+                            "Rejected trusted miner announcement for {announced_peer}: {error}"
+                        );
+                    }
+                }
+            }
             NetworkMessage::RequestChain => {
                 let response = blockchain
                     .lock()
@@ -1679,6 +1846,9 @@ struct MinerAddTrustedConfig {
     file_path: String,
     peer: String,
     reward_wallet: String,
+    peers: Vec<String>,
+    peers_file: Option<String>,
+    approver_wallet_path: Option<String>,
     skip_peer_check: bool,
 }
 
@@ -2379,6 +2549,9 @@ fn parse_miner_command(mut args: Vec<String>) -> Result<Command, String> {
             let mut file_path = None;
             let mut peer = None;
             let mut reward_wallet = None;
+            let mut peers = Vec::new();
+            let mut peers_file = None;
+            let mut approver_wallet_path = None;
             let mut skip_peer_check = false;
             let mut args = args.into_iter();
 
@@ -2400,6 +2573,24 @@ fn parse_miner_command(mut args: Vec<String>) -> Result<Command, String> {
                             "--wallet requires a public reward wallet".to_string()
                         })?);
                     }
+                    "--approver-wallet" => {
+                        approver_wallet_path = Some(args.next().ok_or_else(|| {
+                            "--approver-wallet requires a trusted miner wallet file".to_string()
+                        })?);
+                    }
+                    "--peers-file" => {
+                        peers_file = Some(
+                            args.next()
+                                .ok_or_else(|| "--peers-file requires a file path".to_string())?,
+                        );
+                    }
+                    "--broadcast-peer" => {
+                        peers.push(
+                            args.next().ok_or_else(|| {
+                                "--broadcast-peer requires an IP:PORT".to_string()
+                            })?,
+                        );
+                    }
                     "--skip-peer-check" => skip_peer_check = true,
                     _ => return Err(format!("unknown miner add-trusted option: {arg}")),
                 }
@@ -2414,6 +2605,9 @@ fn parse_miner_command(mut args: Vec<String>) -> Result<Command, String> {
                 reward_wallet: reward_wallet.ok_or_else(|| {
                     "miner add-trusted requires --wallet <PUBLIC_KEY>".to_string()
                 })?,
+                peers,
+                peers_file,
+                approver_wallet_path,
                 skip_peer_check,
             }))
         }
@@ -2740,9 +2934,27 @@ fn add_trusted_miner(config: MinerAddTrustedConfig) -> Result<(), String> {
     let peer = normalize_peer_address(&config.peer)
         .ok_or_else(|| format!("invalid trusted miner peer address: {}", config.peer))?;
     let wallet = normalize_public_wallet(&config.reward_wallet)?;
+    let announcement = match config.approver_wallet_path.as_deref() {
+        Some(path) => {
+            let approver_wallet = WalletFile::load(path)?;
+            Some(TrustedMinerAnnouncement::new(
+                &peer,
+                &wallet,
+                &approver_wallet,
+            )?)
+        }
+        None => None,
+    };
 
     if !config.skip_peer_check && !miners.contains_key(&peer) {
         validate_trusted_miner_candidate(&peer, &miners)?;
+    }
+    if let Some(announcement) = announcement.as_ref() {
+        let registry = TrustedMinerRegistry {
+            miners: Arc::new(Mutex::new(miners.clone())),
+            file_path: None,
+        };
+        validate_trusted_miner_announcement(announcement, &registry)?;
     }
 
     let added = insert_trusted_miner(&mut miners, &peer, &wallet)?;
@@ -2767,7 +2979,35 @@ fn add_trusted_miner(config: MinerAddTrustedConfig) -> Result<(), String> {
         println!("Trusted miner {peer} already uses wallet {wallet}");
     }
     println!("Saved trusted miners file: {}", config.file_path);
+
+    if let Some(announcement) = announcement.as_ref() {
+        let targets = trusted_miner_broadcast_targets(&config, &miners, &peer)?;
+        broadcast_trusted_miner_announcement_to_targets(announcement, targets);
+    } else {
+        println!("No --approver-wallet provided; trusted miner was added locally only");
+    }
     Ok(())
+}
+
+fn trusted_miner_broadcast_targets(
+    config: &MinerAddTrustedConfig,
+    miners: &BTreeMap<String, String>,
+    new_peer: &str,
+) -> Result<Vec<String>, String> {
+    let mut targets = Vec::new();
+    targets.extend(config.peers.clone());
+    if let Some(path) = config.peers_file.as_deref() {
+        targets.extend(load_peers_from_file(path)?);
+    }
+    targets.extend(miners.keys().cloned());
+    targets.push(new_peer.to_string());
+
+    let mut unique = HashSet::new();
+    Ok(targets
+        .into_iter()
+        .filter_map(|peer| normalize_peer_address(&peer))
+        .filter(|peer| unique.insert(peer.clone()))
+        .collect())
 }
 
 fn validate_trusted_miner_candidate(
@@ -2780,7 +3020,8 @@ fn validate_trusted_miner_candidate(
     let candidate = request_chain_from_peer(peer)
         .map_err(|error| format!("candidate miner did not return a valid XYQON chain: {error}"))?;
     let registry = TrustedMinerRegistry {
-        miners: Arc::new(miners.clone()),
+        miners: Arc::new(Mutex::new(miners.clone())),
+        file_path: None,
     };
     let mut known_miner_peers = registry.known_peers();
     known_miner_peers.insert(peer.to_string());
@@ -2791,6 +3032,31 @@ fn validate_trusted_miner_candidate(
     }
 
     println!("Validated candidate miner {peer}");
+    Ok(())
+}
+
+fn validate_trusted_miner_announcement(
+    announcement: &TrustedMinerAnnouncement,
+    trusted_miners: &TrustedMinerRegistry,
+) -> Result<(), String> {
+    let announcement = announcement.normalized()?;
+    if !announcement.verify_signature() {
+        return Err("trusted miner announcement signature is invalid".to_string());
+    }
+    if !trusted_miners.contains_reward_wallet(&announcement.approver_public_key) {
+        return Err(
+            "trusted miner announcement was not signed by a current trusted miner wallet"
+                .to_string(),
+        );
+    }
+
+    let miners = trusted_miners
+        .miners
+        .lock()
+        .map_err(|_| "trusted miner registry lock was poisoned".to_string())?;
+    if !miners.contains_key(&announcement.peer) {
+        validate_trusted_miner_candidate(&announcement.peer, &miners)?;
+    }
     Ok(())
 }
 
@@ -2852,6 +3118,30 @@ fn broadcast_peer_to_peers(peer: &str, peers: &PeerBook) {
     send_message_to_peers(&message, peers, "peer", peer);
 }
 
+fn broadcast_trusted_miner_announcement_to_peers(
+    announcement: &TrustedMinerAnnouncement,
+    peers: &PeerBook,
+) {
+    let message = NetworkMessage::TrustedMinerAnnouncement(announcement.clone());
+    send_message_to_peers(&message, peers, "trusted miner", &announcement.peer);
+}
+
+fn broadcast_trusted_miner_announcement_to_targets(
+    announcement: &TrustedMinerAnnouncement,
+    targets: Vec<String>,
+) {
+    let message = NetworkMessage::TrustedMinerAnnouncement(announcement.clone());
+    for target in targets {
+        match send_message_to_peer(&message, &target) {
+            Ok(()) => println!("Shared trusted miner {} with {}", announcement.peer, target),
+            Err(error) => eprintln!(
+                "Failed to share trusted miner {} with {}: {}",
+                announcement.peer, target, error
+            ),
+        }
+    }
+}
+
 fn send_message_to_peers(message: &NetworkMessage, peers: &PeerBook, label: &str, id: &str) {
     let Ok(serialized) = serde_json::to_string(&message) else {
         eprintln!("Failed to serialize {label} for broadcast");
@@ -2859,17 +3149,26 @@ fn send_message_to_peers(message: &NetworkMessage, peers: &PeerBook, label: &str
     };
 
     for peer in peers.snapshot() {
-        match connect_to_peer(&peer) {
-            Ok(mut stream) => {
-                if let Err(error) = writeln!(stream, "{serialized}") {
-                    eprintln!("Failed to send {label} to {peer}: {error}");
-                } else {
-                    println!("Shared {label} {id} with {peer}");
-                }
-            }
-            Err(error) => eprintln!("Could not connect to peer {peer}: {error}"),
+        match send_serialized_message_to_peer(&serialized, &peer, label) {
+            Ok(()) => println!("Shared {label} {id} with {peer}"),
+            Err(error) => eprintln!("Could not share {label} {id} with {peer}: {error}"),
         }
     }
+}
+
+fn send_message_to_peer(message: &NetworkMessage, peer: &str) -> Result<(), String> {
+    let serialized = serde_json::to_string(message)
+        .map_err(|error| format!("could not serialize network message: {error}"))?;
+    send_serialized_message_to_peer(&serialized, peer, "network message")
+}
+
+fn send_serialized_message_to_peer(
+    serialized: &str,
+    peer: &str,
+    label: &str,
+) -> Result<(), String> {
+    let mut stream = connect_to_peer(peer)?;
+    writeln!(stream, "{serialized}").map_err(|error| format!("could not send {label}: {error}"))
 }
 
 fn load_peers_from_file(path: &str) -> Result<Vec<String>, String> {
@@ -3243,7 +3542,7 @@ USAGE:
   xyqon nft mint --wallet <FILE> --collection <SYMBOL> --token-id <ID> --name <NAME> [--image-url <URL>] [NETWORK OPTIONS]
   xyqon nft send --wallet <FILE> --collection <SYMBOL> --token-id <ID> --to <RECIPIENT> [NETWORK OPTIONS]
   xyqon mine --wallet <FILE> [NETWORK OPTIONS]
-  xyqon miner add-trusted --trusted-miners-file <FILE> --peer <IP:PORT> --wallet <PUBLIC_KEY>
+  xyqon miner add-trusted --trusted-miners-file <FILE> --approver-wallet <FILE> --peer <IP:PORT> --wallet <PUBLIC_KEY>
   xyqon wallet new --name <NAME> --out <FILE>
   xyqon wallet export --wallet <FILE> [--show-private]
   xyqon wallet balance --wallet <FILE> [--chain <FILE>]
@@ -3323,9 +3622,14 @@ MINING:
   If remaining supply is less than the scheduled reward, only the remaining supply can be minted.
 
 TRUSTED MINER COMMANDS:
-  miner add-trusted     Validate and append a public miner peer -> reward wallet mapping
+  miner add-trusted     Validate, append, sign, and broadcast a public miner peer -> reward wallet mapping
   --trusted-miners-file <FILE>
                         JSON file shared by public mining nodes
+  --approver-wallet <FILE>
+                        Current trusted miner wallet that signs the approval for broadcast
+  --peers-file <FILE>   Load peers that should receive the signed trusted miner approval
+  --broadcast-peer <ADDR>
+                        Extra peer to receive the signed trusted miner approval. Can be repeated
   --peer <IP:PORT>      Public miner address to trust
   --wallet <PUBLIC_KEY> Reward wallet public key for that peer
   --skip-peer-check     Prepare the file without checking that the peer is currently reachable
