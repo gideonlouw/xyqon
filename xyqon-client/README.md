@@ -67,7 +67,8 @@ xyqon send \
 ```
 
 The transaction is broadcast to reachable public nodes. A miner must include it in a block before the receiver sees the confirmed balance.
-The client checks the best reachable public chain before broadcasting and refuses sends that exceed the wallet's confirmed XYQON balance.
+The client checks the best reachable public chain before broadcasting, refuses sends that exceed the wallet's confirmed XYQON balance, and now requires at least one node to verify the transaction as pending or confirmed before returning success.
+If every reachable node rejects the transaction or cannot return a transaction status, the send fails with the node's rejection reason when available.
 
 ## Create And Send Coins
 

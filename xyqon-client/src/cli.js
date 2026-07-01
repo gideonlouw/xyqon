@@ -58,6 +58,16 @@ ${color('bold', 'Defaults')}
 `);
 }
 
+function printDelivery(result, label = 'Delivered') {
+  console.log(`${color('green', `${label}:`)} ${result.verifiedBy}/${result.peers.length} nodes verified pending or confirmed`);
+  if (result.rejectedBy > 0) {
+    console.log(`${color('red', 'Rejected:')} ${result.rejectedBy}/${result.peers.length} nodes`);
+  }
+  if (result.unverifiedBy > 0) {
+    console.log(`${color('yellow', 'Unverified:')} ${result.unverifiedBy}/${result.peers.length} nodes did not return a transaction status`);
+  }
+}
+
 function parseArgs(argv) {
   const values = { _: [] };
   for (let index = 0; index < argv.length; index += 1) {
@@ -162,7 +172,7 @@ async function run() {
     console.log(`${color('bold', 'To:')} ${result.transaction.recipient}`);
     console.log(`${color('bold', 'Transaction ID:')} ${result.transactionId}`);
     console.log(`${color('dim', 'Checked balance:')} ${result.preflight.balance} XYQON at block ${result.preflight.blockHeight}`);
-    console.log(`${color('green', 'Delivered:')} ${result.acceptedBy}/${result.peers.length} reachable nodes`);
+    printDelivery(result);
     console.log(color('yellow', 'The receiver balance updates after a miner includes this transaction in a block.'));
     return;
   }
@@ -191,7 +201,7 @@ async function run() {
     console.log(`${color('bold', 'Symbol:')} ${result.transaction.asset_operation.CreateCoin.symbol}`);
     console.log(`${color('bold', 'Supply:')} ${result.transaction.asset_operation.CreateCoin.supply}`);
     console.log(`${color('bold', 'Transaction ID:')} ${result.transactionId}`);
-    console.log(`${color('green', 'Broadcast:')} ${result.acceptedBy}/${result.peers.length} reachable nodes`);
+    printDelivery(result, 'Broadcast');
     console.log(color('yellow', 'The coin exists after a miner includes this transaction in a block.'));
     return;
   }
@@ -221,7 +231,7 @@ async function run() {
     console.log(`${color('bold', 'To:')} ${result.transaction.recipient}`);
     console.log(`${color('bold', 'Transaction ID:')} ${result.transactionId}`);
     console.log(`${color('dim', 'Checked balance:')} ${result.preflight.balance} ${result.preflight.symbol} at block ${result.preflight.blockHeight}`);
-    console.log(`${color('green', 'Delivered:')} ${result.acceptedBy}/${result.peers.length} reachable nodes`);
+    printDelivery(result);
     return;
   }
 
@@ -249,7 +259,7 @@ async function run() {
     printHero('NFT Minted');
     console.log(`${color('bold', 'NFT:')} ${result.transaction.asset_operation.MintNft.collection}:${result.transaction.asset_operation.MintNft.token_id}`);
     console.log(`${color('bold', 'Transaction ID:')} ${result.transactionId}`);
-    console.log(`${color('green', 'Broadcast:')} ${result.acceptedBy}/${result.peers.length} reachable nodes`);
+    printDelivery(result, 'Broadcast');
     console.log(color('yellow', 'The NFT exists after a miner includes this transaction in a block.'));
     return;
   }
@@ -278,7 +288,7 @@ async function run() {
     console.log(`${color('bold', 'NFT:')} ${result.transaction.asset_operation.TransferNft.collection}:${result.transaction.asset_operation.TransferNft.token_id}`);
     console.log(`${color('bold', 'To:')} ${result.transaction.recipient}`);
     console.log(`${color('bold', 'Transaction ID:')} ${result.transactionId}`);
-    console.log(`${color('green', 'Broadcast:')} ${result.acceptedBy}/${result.peers.length} reachable nodes`);
+    printDelivery(result, 'Broadcast');
     return;
   }
 

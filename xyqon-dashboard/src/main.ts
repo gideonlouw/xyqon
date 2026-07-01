@@ -153,6 +153,9 @@ const firebaseRuntime = loadFirebaseRuntime();
           <a href="/developers" (click)="navigate($event, 'developers')">Developers</a>
           <a href="/clothing" (click)="navigate($event, 'clothing')">Clothing</a>
           <a href="/community" (click)="navigate($event, 'community')">Community</a>
+          @if (user()) {
+            <a href="https://discord.gg/sTZ6MJBU" target="_blank" rel="noopener noreferrer">Discord</a>
+          }
         </div>
       </nav>
 
@@ -612,6 +615,9 @@ const coinHoldings = await getCoinHoldings(wallet);</code></pre>
               <p>{{ activeUser.email }}</p>
               <div class="member-status">Active member</div>
               <p>Your profile is connected. Use Sync Profile if your Google name or email changes.</p>
+              <a class="discord-community-link" href="https://discord.gg/sTZ6MJBU" target="_blank" rel="noopener noreferrer">
+                Join the Discord community
+              </a>
             } @else {
               <span>Membership</span>
               <strong>Google sign-in required</strong>

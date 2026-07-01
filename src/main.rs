@@ -1228,6 +1228,15 @@ enum NetworkMessage {
     ChainResponse(Blockchain),
     RequestPeers,
     PeerResponse(Vec<String>),
+    RequestTransaction(String),
+    TransactionResponse(TransactionStatus),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct TransactionStatus {
+    id: String,
+    status: String,
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1658,9 +1667,45 @@ fn handle_peer_stream(
                         if let Err(error) = save_mempool(&mempool, &mempool_path) {
                             eprintln!("Could not save mempool: {error}");
                         }
+                        let response = NetworkMessage::TransactionResponse(TransactionStatus {
+                            id: transaction_id,
+                            status: "pending".to_string(),
+                            error: None,
+                        });
+                        if let Ok(serialized) = serde_json::to_string(&response) {
+                            if let Err(error) = writeln!(reader.get_mut(), "{serialized}") {
+                                eprintln!("Failed to send transaction response: {error}");
+                            }
+                        }
                         broadcast_transaction_to_peers(&transaction, &peers);
                     }
-                    Err(error) => eprintln!("Rejected transaction {transaction_id}: {error}"),
+                    Err(error) => {
+                        eprintln!("Rejected transaction {transaction_id}: {error}");
+                        let response = if error == "transaction has already been confirmed" {
+                            NetworkMessage::TransactionResponse(TransactionStatus {
+                                id: transaction_id,
+                                status: "confirmed".to_string(),
+                                error: None,
+                            })
+                        } else if error == "transaction is already in the mempool" {
+                            NetworkMessage::TransactionResponse(TransactionStatus {
+                                id: transaction_id,
+                                status: "pending".to_string(),
+                                error: None,
+                            })
+                        } else {
+                            NetworkMessage::TransactionResponse(TransactionStatus {
+                                id: transaction_id,
+                                status: "rejected".to_string(),
+                                error: Some(error),
+                            })
+                        };
+                        if let Ok(serialized) = serde_json::to_string(&response) {
+                            if let Err(error) = writeln!(reader.get_mut(), "{serialized}") {
+                                eprintln!("Failed to send transaction response: {error}");
+                            }
+                        }
+                    }
                 }
             }
             NetworkMessage::NewPeer(peer) => {
@@ -1730,11 +1775,35 @@ fn handle_peer_stream(
                     Err(error) => eprintln!("Failed to serialize peer response: {error}"),
                 }
             }
+            NetworkMessage::RequestTransaction(transaction_id) => {
+                let response =
+                    match transaction_status(&blockchain, &mempool, transaction_id.clone()) {
+                        Ok(status) => NetworkMessage::TransactionResponse(status),
+                        Err(error) => NetworkMessage::TransactionResponse(TransactionStatus {
+                            id: transaction_id,
+                            status: "error".to_string(),
+                            error: Some(error),
+                        }),
+                    };
+                match serde_json::to_string(&response) {
+                    Ok(serialized) => {
+                        if let Err(error) = writeln!(reader.get_mut(), "{serialized}") {
+                            eprintln!("Failed to send transaction status response: {error}");
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("Failed to serialize transaction status response: {error}")
+                    }
+                }
+            }
             NetworkMessage::ChainResponse(_) => {
                 eprintln!("Unexpected chain response on listener connection");
             }
             NetworkMessage::PeerResponse(_) => {
                 eprintln!("Unexpected peer response on listener connection");
+            }
+            NetworkMessage::TransactionResponse(_) => {
+                eprintln!("Unexpected transaction response on listener connection");
             }
         }
     }
@@ -3359,6 +3428,47 @@ fn add_transaction_to_mempool(
 
     mempool.push(transaction);
     Ok(())
+}
+
+fn transaction_status(
+    blockchain: &Arc<Mutex<Blockchain>>,
+    mempool: &Arc<Mutex<Vec<Transaction>>>,
+    transaction_id: String,
+) -> Result<TransactionStatus, String> {
+    let blockchain = blockchain
+        .lock()
+        .map_err(|_| "blockchain lock was poisoned".to_string())?;
+    if blockchain
+        .confirmed_transaction_ids()
+        .contains(&transaction_id)
+    {
+        return Ok(TransactionStatus {
+            id: transaction_id,
+            status: "confirmed".to_string(),
+            error: None,
+        });
+    }
+    drop(blockchain);
+
+    let mempool = mempool
+        .lock()
+        .map_err(|_| "mempool lock was poisoned".to_string())?;
+    if mempool
+        .iter()
+        .any(|transaction| transaction.id() == transaction_id)
+    {
+        return Ok(TransactionStatus {
+            id: transaction_id,
+            status: "pending".to_string(),
+            error: None,
+        });
+    }
+
+    Ok(TransactionStatus {
+        id: transaction_id,
+        status: "unknown".to_string(),
+        error: None,
+    })
 }
 
 fn prune_mempool_against_current_chain(

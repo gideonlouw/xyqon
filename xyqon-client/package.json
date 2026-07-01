@@ -1,6 +1,6 @@
 {
   "name": "xyqon",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Friendly wallet CLI and JavaScript client for the XYQON network.",
   "keywords": [
     "xyqon",

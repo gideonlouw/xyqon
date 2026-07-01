@@ -256,6 +256,25 @@ a {
   padding: 0 12px;
 }
 
+.discord-community-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  margin-top: 8px;
+  border: 1px solid #5865f2;
+  border-radius: 6px;
+  background: #5865f2;
+  color: #fff;
+  font-weight: 800;
+  padding: 0 14px;
+  text-decoration: none;
+}
+
+.discord-community-link:hover {
+  background: #4752c4;
+}
+
 .community-message {
   border: 1px solid #b9d8c5;
   border-radius: 6px;

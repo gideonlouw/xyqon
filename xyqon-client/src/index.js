@@ -334,6 +334,62 @@ export function sendNetworkMessage(peer, message, timeoutMs = 5000) {
   });
 }
 
+export function sendTransactionMessage(peer, transaction, timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    const normalizedPeer = normalizePeer(peer);
+    const [host, portText] = normalizedPeer.split(':');
+    const socket = net.createConnection({ host, port: Number(portText) });
+    const startedAt = Date.now();
+    const id = transactionId(transaction);
+    let data = '';
+    let wrote = false;
+    let settled = false;
+
+    const finish = (result) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      socket.destroy();
+      resolve({ peer: normalizedPeer, latencyMs: Date.now() - startedAt, ...result });
+    };
+
+    socket.setTimeout(timeoutMs);
+    socket.on('connect', () => {
+      socket.write(`${JSON.stringify({ NewTransaction: transaction })}\n`, () => {
+        wrote = true;
+      });
+    });
+    socket.on('data', (chunk) => {
+      data += chunk.toString('utf8');
+      if (!data.includes('\n')) {
+        return;
+      }
+
+      try {
+        const parsed = JSON.parse(data.trim());
+        const status = parsed.TransactionResponse;
+        if (!status || status.id !== id) {
+          finish({ ok: false, submitted: wrote, error: 'peer returned an unexpected transaction response' });
+          return;
+        }
+
+        finish({
+          ok: status.status === 'pending' || status.status === 'confirmed',
+          submitted: status.status === 'pending' || status.status === 'confirmed',
+          verified: true,
+          status: status.status,
+          error: status.error ?? undefined
+        });
+      } catch (error) {
+        finish({ ok: false, submitted: wrote, error: error.message });
+      }
+    });
+    socket.on('timeout', () => finish({ ok: false, submitted: wrote, verified: false, error: 'timeout waiting for transaction response' }));
+    socket.on('error', (error) => finish({ ok: false, submitted: wrote, error: error.message }));
+  });
+}
+
 export async function requestChain(peer) {
   const result = await requestMessage(peer, 'RequestChain', 'ChainResponse');
   return { ...result, chain: result.payload };
@@ -344,6 +400,16 @@ export async function requestPeers(peer) {
   return {
     ...result,
     peers: Array.isArray(result.payload) ? normalizePeers(result.payload) : []
+  };
+}
+
+export async function requestTransactionStatus(peer, id) {
+  const result = await requestMessage(peer, { RequestTransaction: id }, 'TransactionResponse');
+  return {
+    ...result,
+    transaction: result.payload,
+    status: result.payload?.status,
+    verified: result.ok && (result.payload?.status === 'pending' || result.payload?.status === 'confirmed')
   };
 }
 
@@ -626,32 +692,50 @@ export async function getCoinHoldings(addressOrWallet, seedPeers = DEFAULT_PEERS
 
 export async function broadcastTransaction(transaction, seedPeers = DEFAULT_PEERS) {
   const peers = await discoverPeers(seedPeers);
-  const message = { NewTransaction: transaction };
-  const results = await Promise.all(peers.map((peer) => sendNetworkMessage(peer, message)));
+  const id = transactionId(transaction);
+  const results = await Promise.all(peers.map((peer) => sendTransactionMessage(peer, transaction)));
+  const verifiedResults = results.filter((result) => result.verified);
+  const rejectedResults = results.filter((result) => result.status === 'rejected');
 
   return {
-    transactionId: transactionId(transaction),
+    transactionId: id,
     peers,
     results,
-    acceptedBy: results.filter((result) => result.ok).length
+    acceptedBy: verifiedResults.length,
+    verifiedBy: verifiedResults.length,
+    rejectedBy: rejectedResults.length,
+    unverifiedBy: results.filter((result) => result.submitted && !result.verified).length
   };
+}
+
+function assertBroadcastVerified(broadcast) {
+  if (broadcast.verifiedBy > 0) {
+    return broadcast;
+  }
+
+  const rejection = broadcast.results.find((result) => result.status === 'rejected' && result.error);
+  const failure = rejection ?? broadcast.results.find((result) => result.error);
+  const detail = failure ? ` ${failure.peer}: ${failure.error}` : '';
+  throw new Error(`transaction was not accepted by any reachable XYQON node.${detail}`);
 }
 
 export async function sendTransaction({ wallet, recipient, amount, fee = DEFAULT_XYQON_TRANSACTION_FEE, peers = DEFAULT_PEERS }) {
   const transaction = createSignedTransaction(wallet, recipient, amount, fee);
   const preflight = await assertSpendableXyqonBalance(wallet, transaction.amount, peers, transaction.fee);
+  const broadcast = assertBroadcastVerified(await broadcastTransaction(transaction, peers));
   return {
     transaction,
     preflight,
-    ...(await broadcastTransaction(transaction, peers))
+    ...broadcast
   };
 }
 
 export async function createCoin({ wallet, symbol, name, supply, peers = DEFAULT_PEERS }) {
   const transaction = createCoinTransaction(wallet, { symbol, name, supply });
+  const broadcast = assertBroadcastVerified(await broadcastTransaction(transaction, peers));
   return {
     transaction,
-    ...(await broadcastTransaction(transaction, peers))
+    ...broadcast
   };
 }
 
@@ -663,25 +747,28 @@ export async function sendCoin({ wallet, recipient, symbol, amount, peers = DEFA
     transaction.asset_operation.TransferCoin.amount,
     peers
   );
+  const broadcast = assertBroadcastVerified(await broadcastTransaction(transaction, peers));
   return {
     transaction,
     preflight,
-    ...(await broadcastTransaction(transaction, peers))
+    ...broadcast
   };
 }
 
 export async function mintNft({ wallet, collection, tokenId, name, imageUrl = null, peers = DEFAULT_PEERS }) {
   const transaction = createNftMintTransaction(wallet, { collection, tokenId, name, imageUrl });
+  const broadcast = assertBroadcastVerified(await broadcastTransaction(transaction, peers));
   return {
     transaction,
-    ...(await broadcastTransaction(transaction, peers))
+    ...broadcast
   };
 }
 
 export async function transferNft({ wallet, recipient, collection, tokenId, peers = DEFAULT_PEERS }) {
   const transaction = createNftTransferTransaction(wallet, { recipient, collection, tokenId });
+  const broadcast = assertBroadcastVerified(await broadcastTransaction(transaction, peers));
   return {
     transaction,
-    ...(await broadcastTransaction(transaction, peers))
+    ...broadcast
   };
 }

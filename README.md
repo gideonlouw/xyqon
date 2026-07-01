@@ -213,6 +213,7 @@ xyqon submit \
 ```
 
 The transaction enters the mempool of reachable peers. A miner must then include it in a block.
+Updated nodes reply to transaction submissions with `pending`, `confirmed`, or `rejected` so clients can detect rejected transactions immediately.
 
 ## Create A Coin
 
@@ -311,12 +312,14 @@ RequestChain
 ChainResponse(Blockchain)
 RequestPeers
 PeerResponse(Vec<String>)
+RequestTransaction(String)
+TransactionResponse(TransactionStatus)
 ```
 
 When a node receives a peer announcement, it validates the address format and checks that the peer answers XYQON network requests before saving or forwarding the address. This prevents unrelated hosts from polluting `peers.txt`.
 Dashboards and other tools can also request a node's known peers with `RequestPeers`, then crawl from those seed nodes to discover more of the network.
 
-When a node receives a transaction, it checks the signature, rejects duplicates, stores the transaction in its mempool, and shares it with peers. Transactions are checked against confirmed balances plus pending spends.
+When a node receives a transaction, it checks the signature, rejects invalid spends, stores valid transactions in its mempool, replies with the transaction status, and shares accepted transactions with peers. Transactions are checked against confirmed balances plus pending spends.
 
 When a node receives a block, it checks:
 
