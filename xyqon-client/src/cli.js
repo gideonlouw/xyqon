@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createRequire } from 'node:module';
 import {
   DEFAULT_PEERS,
   DEFAULT_WALLET_PATH,
@@ -14,6 +15,9 @@ import {
   transferNft,
   sendTransaction
 } from './index.js';
+
+const require = createRequire(import.meta.url);
+const { version: VERSION } = require('../package.json');
 
 const colors = {
   cyan: '\x1b[36m',
@@ -48,6 +52,8 @@ ${color('bold', 'Usage')}
   xyqon nft mint --collection <SYMBOL> --token-id <ID> --name <NAME> [--image-url <URL>] [--wallet <FILE>]
   xyqon nft send --collection <SYMBOL> --token-id <ID> --to <PUBLIC_KEY> [--wallet <FILE>]
   xyqon nodes
+  xyqon version
+  xyqon -v
 
 ${color('bold', 'Network options')}
   --peer <IP[:PORT]>    Add a seed peer. Can be repeated.
@@ -112,6 +118,11 @@ async function run() {
 
   if (!command || command === 'help' || command === '--help' || command === '-h') {
     printHelp();
+    return;
+  }
+
+  if (command === 'version' || command === '--version' || command === '-v') {
+    console.log(VERSION);
     return;
   }
 

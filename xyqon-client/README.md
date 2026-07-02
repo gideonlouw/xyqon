@@ -20,10 +20,28 @@ You do not need to mine and you do not need to run a full node.
 npm install -g xyqon
 ```
 
+Update an existing global install:
+
+```bash
+npm update -g xyqon
+```
+
+Or install this exact release:
+
+```bash
+npm install -g xyqon@0.5.0
+```
+
 Or run without installing:
 
 ```bash
 npx xyqon help
+```
+
+Run this exact release without installing:
+
+```bash
+npx xyqon@0.5.0 help
 ```
 
 ## Create A Wallet
@@ -106,6 +124,13 @@ xyqon nft send \
 
 ```bash
 xyqon nodes
+```
+
+## Show Version
+
+```bash
+xyqon version
+xyqon -v
 ```
 
 ## Seed Nodes
