@@ -23,10 +23,10 @@
     "start:api": "node server/xyqon-api.mjs",
     "start:web": "ng serve --host 127.0.0.1 --port 4200",
     "build": "ng build",
-    "deploy": "npm run deploy:hosting",
+    "deploy": "npm run build && firebase deploy --only hosting,functions,firestore:rules --project xyqon-c1dc7",
     "deploy:hosting": "npm run build && firebase deploy --only hosting --project xyqon-c1dc7",
-    "deploy:functions": "firebase deploy --only functions",
-    "deploy:rules": "firebase deploy --only firestore:rules",
+    "deploy:functions": "firebase deploy --only functions --project xyqon-c1dc7",
+    "deploy:rules": "firebase deploy --only firestore:rules --project xyqon-c1dc7",
     "test:api": "node server/xyqon-api.mjs --once"
   },
   "dependencies": {

@@ -18,6 +18,9 @@ type Transaction = {
   asset_operation?: {
     CreateCoin?: { symbol: string; name: string; supply: number };
     TransferCoin?: { symbol: string; amount: number };
+    RegisterCollection?: { collection: string; authorized_minters: string[]; metadata_url?: string; authority_mutable: boolean };
+    UpdateCollection?: { collection: string; authorized_minters: string[]; metadata_url?: string };
+    LockCollection?: { collection: string };
     MintNft?: { collection: string; token_id: string; name: string; image_url?: string };
     TransferNft?: { collection: string; token_id: string };
   };
@@ -78,6 +81,16 @@ type NftAsset = {
   lastTransferBlock: number | null;
 };
 
+type CollectionAsset = {
+  collection: string;
+  creator: string;
+  authorizedMinters: string[];
+  metadataUrl: string | null;
+  authorityMutable: boolean;
+  locked: boolean;
+  registeredInBlock: number;
+};
+
 type DashboardResponse = {
   generatedAt: string;
   sourceNode: string | null;
@@ -93,6 +106,7 @@ type DashboardResponse = {
   richList: AddressBalance[];
   publicAddresses: AddressBalance[];
   coins: CoinAsset[];
+  collections: CollectionAsset[];
   nfts: NftAsset[];
   recentBlocks: Block[];
   recentTransactions: ExplorerTransaction[];
@@ -765,6 +779,33 @@ const coinHoldings = await getCoinHoldings(wallet);</code></pre>
           </section>
 
           @if (page() === 'dashboard') {
+            @if (data.collections.length) {
+              <section class="panel">
+                <div class="panel-head">
+                  <h2>Registered NFT Collections</h2>
+                  <span>{{ data.collections.length }} protected collections</span>
+                </div>
+                <div class="coin-list">
+                  @for (collection of data.collections; track collection.collection) {
+                    <article>
+                      <div class="asset-title">
+                        <div><strong>{{ collection.collection }}</strong><span>Creator</span></div>
+                        <em>{{ collection.locked ? 'Locked' : (collection.authorityMutable ? 'Mutable' : 'Immutable') }}</em>
+                      </div>
+                      <p class="mono wrap">{{ collection.creator }}</p>
+                      <div class="holders">
+                        @for (minter of collection.authorizedMinters; track minter) {
+                          <p><span class="mono wrap">Authorized minter: {{ minter }}</span></p>
+                        }
+                      </div>
+                      @if (collection.metadataUrl) {
+                        <p class="mono wrap">{{ collection.metadataUrl }}</p>
+                      }
+                    </article>
+                  }
+                </div>
+              </section>
+            }
             <section class="grid two assets-grid">
               <div class="panel">
                 <div class="panel-head">
@@ -1038,6 +1079,9 @@ class App {
     if (operation?.TransferCoin) {
       return 'Coin Send';
     }
+    if (operation?.RegisterCollection) return 'Collection Register';
+    if (operation?.UpdateCollection) return 'Collection Update';
+    if (operation?.LockCollection) return 'Collection Lock';
     if (operation?.MintNft) {
       return 'NFT Mint';
     }
@@ -1055,6 +1099,9 @@ class App {
     if (operation?.TransferCoin) {
       return `${operation.TransferCoin.amount} ${operation.TransferCoin.symbol}`;
     }
+    if (operation?.RegisterCollection) return operation.RegisterCollection.collection;
+    if (operation?.UpdateCollection) return operation.UpdateCollection.collection;
+    if (operation?.LockCollection) return operation.LockCollection.collection;
     if (operation?.MintNft) {
       return `${operation.MintNft.collection}:${operation.MintNft.token_id}`;
     }

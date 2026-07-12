@@ -90,6 +90,24 @@ function stringifyAssetOperationForSigning(assetOperation) {
     return `{"TransferCoin":{"symbol":${jsonString(transfer.symbol)},"amount":${rustJsonNumber(transfer.amount)}}}`;
   }
 
+  if (assetOperation.RegisterCollection) {
+    const value = assetOperation.RegisterCollection;
+    const minters = JSON.stringify(value.authorized_minters);
+    const metadata = value.metadata_url ? `,"metadata_url":${jsonString(value.metadata_url)}` : '';
+    return `{"RegisterCollection":{"collection":${jsonString(value.collection)},"authorized_minters":${minters}${metadata},"authority_mutable":${value.authority_mutable}}}`;
+  }
+
+  if (assetOperation.UpdateCollection) {
+    const value = assetOperation.UpdateCollection;
+    const minters = JSON.stringify(value.authorized_minters);
+    const metadata = value.metadata_url ? `,"metadata_url":${jsonString(value.metadata_url)}` : '';
+    return `{"UpdateCollection":{"collection":${jsonString(value.collection)},"authorized_minters":${minters}${metadata}}}`;
+  }
+
+  if (assetOperation.LockCollection) {
+    return `{"LockCollection":{"collection":${jsonString(assetOperation.LockCollection.collection)}}}`;
+  }
+
   if (assetOperation.MintNft) {
     const nft = assetOperation.MintNft;
     const imageUrl = nft.image_url ? `,"image_url":${jsonString(nft.image_url)}` : '';
@@ -178,6 +196,23 @@ export function normalizeTokenAmount(amount, label = 'amount') {
   return numeric;
 }
 
+export function normalizePublicKeys(publicKeys) {
+  const values = [...new Set(publicKeys.map((value) => `${value}`.trim().toLowerCase()))];
+  if (values.length < 1 || values.length > 32 || values.some((value) => !/^[0-9a-f]{64}$/.test(value))) {
+    throw new Error('authorized minters must contain 1 to 32 Ed25519 public keys');
+  }
+  return values;
+}
+
+function normalizeMetadataUrl(metadataUrl) {
+  if (!metadataUrl) return null;
+  const value = `${metadataUrl}`.trim();
+  if (value.length > 512 || !/^(https:\/\/|ipfs:\/\/)/i.test(value)) {
+    throw new Error('collection metadata URL must start with https:// or ipfs:// and be at most 512 characters');
+  }
+  return value;
+}
+
 export function createSignedTransaction(wallet, recipient, amount, fee = DEFAULT_XYQON_TRANSACTION_FEE) {
   const numericAmount = Number(amount);
   if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
@@ -230,6 +265,30 @@ export function createCoinTransferTransaction(wallet, { recipient, symbol, amoun
   };
 
   return createSignedAssetTransaction(wallet, recipient, assetOperation);
+}
+
+export function createCollectionRegistrationTransaction(wallet, { collection, authorizedMinters, metadataUrl = null, authorityMutable = true }) {
+  const operation = { RegisterCollection: {
+    collection: normalizeCoinSymbol(collection),
+    authorized_minters: normalizePublicKeys(authorizedMinters),
+    ...(normalizeMetadataUrl(metadataUrl) ? { metadata_url: normalizeMetadataUrl(metadataUrl) } : {}),
+    authority_mutable: Boolean(authorityMutable)
+  } };
+  return createSignedAssetTransaction(wallet, wallet.public_key, operation);
+}
+
+export function createCollectionUpdateTransaction(wallet, { collection, authorizedMinters, metadataUrl = null }) {
+  const operation = { UpdateCollection: {
+    collection: normalizeCoinSymbol(collection),
+    authorized_minters: normalizePublicKeys(authorizedMinters),
+    ...(normalizeMetadataUrl(metadataUrl) ? { metadata_url: normalizeMetadataUrl(metadataUrl) } : {})
+  } };
+  return createSignedAssetTransaction(wallet, wallet.public_key, operation);
+}
+
+export function createCollectionLockTransaction(wallet, { collection }) {
+  const operation = { LockCollection: { collection: normalizeCoinSymbol(collection) } };
+  return createSignedAssetTransaction(wallet, wallet.public_key, operation);
 }
 
 export function createNftMintTransaction(wallet, { collection, tokenId, name, imageUrl = null }) {
@@ -753,6 +812,21 @@ export async function sendCoin({ wallet, recipient, symbol, amount, peers = DEFA
     preflight,
     ...broadcast
   };
+}
+
+export async function registerCollection({ wallet, collection, authorizedMinters = [wallet.public_key], metadataUrl = null, authorityMutable = true, peers = DEFAULT_PEERS }) {
+  const transaction = createCollectionRegistrationTransaction(wallet, { collection, authorizedMinters, metadataUrl, authorityMutable });
+  return { transaction, ...assertBroadcastVerified(await broadcastTransaction(transaction, peers)) };
+}
+
+export async function updateCollection({ wallet, collection, authorizedMinters, metadataUrl = null, peers = DEFAULT_PEERS }) {
+  const transaction = createCollectionUpdateTransaction(wallet, { collection, authorizedMinters, metadataUrl });
+  return { transaction, ...assertBroadcastVerified(await broadcastTransaction(transaction, peers)) };
+}
+
+export async function lockCollection({ wallet, collection, peers = DEFAULT_PEERS }) {
+  const transaction = createCollectionLockTransaction(wallet, { collection });
+  return { transaction, ...assertBroadcastVerified(await broadcastTransaction(transaction, peers)) };
 }
 
 export async function mintNft({ wallet, collection, tokenId, name, imageUrl = null, peers = DEFAULT_PEERS }) {

@@ -14,7 +14,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const INITIAL_DIFFICULTY: usize = 4;
 const MIN_DIFFICULTY: usize = 1;
@@ -36,6 +36,9 @@ const EMPTY_REWARD_BLOCK_REJECTION_START_TIMESTAMP: i64 = 1_780_732_800; // 2026
 const TRANSACTION_FEE_START_TIMESTAMP: i64 = 1_780_747_200; // 2026-06-06T12:00:00Z
 const PUBLIC_MINER_REWARD_START_TIMESTAMP: i64 = 1_780_747_200; // 2026-06-06T12:00:00Z
 const DEFAULT_XYQON_TRANSACTION_FEE: f64 = 0.001;
+const SOFTWARE_VERSION: &str = env!("CARGO_PKG_VERSION");
+const PROTOCOL_VERSION: u32 = 2;
+const UPGRADE_QUORUM: usize = 2;
 const TRUSTED_PUBLIC_MINER_REWARD_WALLETS: [(&str, &str); 3] = [
     (
         "143.244.149.8:7101",
@@ -461,6 +464,70 @@ impl Transaction {
             signature: bytes_to_hex(&signature.to_bytes()),
             asset_operation: Some(asset_operation),
         })
+    }
+
+    fn register_collection(
+        sender: &str,
+        collection: String,
+        authorized_minters: Vec<String>,
+        metadata_url: Option<String>,
+        authority_mutable: bool,
+        signing_key: &SigningKey,
+    ) -> Result<Self, String> {
+        let operation = AssetOperation::register_collection(
+            collection,
+            authorized_minters,
+            metadata_url,
+            authority_mutable,
+        )?;
+        Ok(Self::signed_asset(sender, operation, signing_key))
+    }
+
+    fn update_collection(
+        sender: &str,
+        collection: String,
+        authorized_minters: Vec<String>,
+        metadata_url: Option<String>,
+        signing_key: &SigningKey,
+    ) -> Result<Self, String> {
+        let operation =
+            AssetOperation::update_collection(collection, authorized_minters, metadata_url)?;
+        Ok(Self::signed_asset(sender, operation, signing_key))
+    }
+
+    fn lock_collection(
+        sender: &str,
+        collection: String,
+        signing_key: &SigningKey,
+    ) -> Result<Self, String> {
+        let operation = AssetOperation::lock_collection(collection)?;
+        Ok(Self::signed_asset(sender, operation, signing_key))
+    }
+
+    fn signed_asset(
+        sender: &str,
+        asset_operation: AssetOperation,
+        signing_key: &SigningKey,
+    ) -> Self {
+        let sender_public_key = bytes_to_hex(signing_key.verifying_key().as_bytes());
+        let payload = Transaction::payload(
+            sender,
+            &sender_public_key,
+            0.0,
+            0.0,
+            &sender_public_key,
+            Some(&asset_operation),
+        );
+        let signature = signing_key.sign(payload.as_bytes());
+        Transaction {
+            sender: sender.to_string(),
+            recipient: sender_public_key.clone(),
+            amount: 0.0,
+            fee: 0.0,
+            sender_public_key,
+            signature: bytes_to_hex(&signature.to_bytes()),
+            asset_operation: Some(asset_operation),
+        }
     }
 
     fn mint_nft(
@@ -1230,6 +1297,14 @@ enum NetworkMessage {
     PeerResponse(Vec<String>),
     RequestTransaction(String),
     TransactionResponse(TransactionStatus),
+    RequestNodeVersion,
+    NodeVersion(NodeVersionInfo),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct NodeVersionInfo {
+    software_version: String,
+    protocol_version: u32,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -1566,6 +1641,40 @@ impl Node {
         }
     }
 
+    fn ensure_supported_version(&self) -> Result<(), String> {
+        let trusted_peers = self.trusted_miners.known_peers();
+        let reports: Vec<(String, NodeVersionInfo)> = self
+            .peers
+            .snapshot()
+            .into_iter()
+            .filter(|peer| trusted_peers.contains(peer))
+            .filter_map(|peer| {
+                request_node_version_from_peer(&peer)
+                    .ok()
+                    .map(|info| (peer, info))
+            })
+            .collect();
+        let newer: Vec<&(String, NodeVersionInfo)> = reports
+            .iter()
+            .filter(|(_, info)| info.protocol_version > PROTOCOL_VERSION)
+            .collect();
+
+        if newer.len() >= UPGRADE_QUORUM {
+            let latest = newer
+                .iter()
+                .max_by_key(|(_, info)| info.protocol_version)
+                .expect("newer reports cannot be empty");
+            return Err(format!(
+                "UPGRADE REQUIRED: XYQON {SOFTWARE_VERSION} uses protocol {PROTOCOL_VERSION}, but {count} peers report protocol {remote_protocol} (software {remote_version}). Transaction and block validation has stopped. Install the latest XYQON source and restart.",
+                count = newer.len(),
+                remote_protocol = latest.1.protocol_version,
+                remote_version = latest.1.software_version,
+            ));
+        }
+
+        Ok(())
+    }
+
     fn print_chain(&self) {
         let Ok(blockchain) = self.blockchain.lock() else {
             eprintln!("Could not read blockchain");
@@ -1796,6 +1905,20 @@ fn handle_peer_stream(
                     }
                 }
             }
+            NetworkMessage::RequestNodeVersion => {
+                let response = NetworkMessage::NodeVersion(NodeVersionInfo {
+                    software_version: SOFTWARE_VERSION.to_string(),
+                    protocol_version: PROTOCOL_VERSION,
+                });
+                match serde_json::to_string(&response) {
+                    Ok(serialized) => {
+                        if let Err(error) = writeln!(reader.get_mut(), "{serialized}") {
+                            eprintln!("Failed to send node version response: {error}");
+                        }
+                    }
+                    Err(error) => eprintln!("Failed to serialize node version response: {error}"),
+                }
+            }
             NetworkMessage::ChainResponse(_) => {
                 eprintln!("Unexpected chain response on listener connection");
             }
@@ -1804,6 +1927,9 @@ fn handle_peer_stream(
             }
             NetworkMessage::TransactionResponse(_) => {
                 eprintln!("Unexpected transaction response on listener connection");
+            }
+            NetworkMessage::NodeVersion(_) => {
+                eprintln!("Unexpected node version response on listener connection");
             }
         }
     }
@@ -1822,6 +1948,7 @@ enum Command {
     WalletExport(WalletExportConfig),
     WalletBalance(WalletBalanceConfig),
     MinerAddTrusted(MinerAddTrustedConfig),
+    Version,
     Help,
 }
 
@@ -1955,6 +2082,7 @@ impl Command {
             "mine" => MineConfig::from_args(args).map(Command::Mine),
             "miner" => parse_miner_command(args),
             "wallet" => parse_wallet_command(args),
+            "version" | "--version" | "-V" => Ok(Command::Version),
             "help" | "--help" | "-h" => Ok(Command::Help),
             _ => Err(format!("unknown command: {command}")),
         }
@@ -2705,6 +2833,10 @@ fn run() -> Result<(), String> {
         Command::WalletExport(config) => export_wallet(config),
         Command::WalletBalance(config) => show_wallet_balance(config),
         Command::MinerAddTrusted(config) => add_trusted_miner(config),
+        Command::Version => {
+            println!("XYQON {SOFTWARE_VERSION} (protocol {PROTOCOL_VERSION})");
+            Ok(())
+        }
         Command::Help => {
             print_help();
             Ok(())
@@ -2717,6 +2849,7 @@ fn run_node(config: NodeConfig) -> Result<(), String> {
     let has_listener = listen_addr.is_some();
     let should_stay_alive = has_listener || !config.peers.is_empty() || config.peers_file.is_some();
     let node = Node::new(config)?;
+    node.ensure_supported_version()?;
 
     if let Some(listen_addr) = listen_addr {
         node.start_listener(listen_addr);
@@ -2730,6 +2863,7 @@ fn run_node(config: NodeConfig) -> Result<(), String> {
     if should_stay_alive {
         loop {
             thread::sleep(Duration::from_secs(60));
+            node.ensure_supported_version()?;
         }
     }
 
@@ -2748,6 +2882,7 @@ fn submit_transaction(config: SubmitConfig) -> Result<(), String> {
         mempool_path: config.mempool_path,
         advertised_addr: None,
     })?;
+    node.ensure_supported_version()?;
 
     node.sync_chain_from_peers();
     node.submit_transaction(Transaction::new_with_fee(
@@ -2905,6 +3040,7 @@ fn run_miner(config: MineConfig) -> Result<(), String> {
         mempool_path: config.mempool_path,
         advertised_addr: config.advertised_addr,
     })?;
+    node.ensure_supported_version()?;
 
     if let Some(listen_addr) = listen_addr {
         node.start_listener(listen_addr);
@@ -2913,8 +3049,13 @@ fn run_miner(config: MineConfig) -> Result<(), String> {
     node.sync_chain_from_peers();
     node.announce_self();
     println!("Mining rewards will be paid to {}", wallet.public_key);
+    let mut last_version_check = Instant::now();
 
     loop {
+        if last_version_check.elapsed() >= Duration::from_secs(60) {
+            node.ensure_supported_version()?;
+            last_version_check = Instant::now();
+        }
         node.sync_chain_from_peers();
         if node.pending_transaction_count() == 0 {
             println!("No pending transactions; waiting for work");
@@ -3378,6 +3519,25 @@ fn request_chain_from_peer(peer: &str) -> Result<Blockchain, String> {
     }
 }
 
+fn request_node_version_from_peer(peer: &str) -> Result<NodeVersionInfo, String> {
+    let mut stream = connect_to_peer(peer)?;
+    let request = serde_json::to_string(&NetworkMessage::RequestNodeVersion)
+        .map_err(|error| format!("could not serialize node version request: {error}"))?;
+    writeln!(stream, "{request}")
+        .map_err(|error| format!("could not send node version request: {error}"))?;
+    let mut reader = BufReader::new(stream);
+    let mut response = String::new();
+    reader
+        .read_line(&mut response)
+        .map_err(|error| format!("could not read node version response: {error}"))?;
+    match serde_json::from_str::<NetworkMessage>(&response)
+        .map_err(|error| format!("could not parse node version response: {error}"))?
+    {
+        NetworkMessage::NodeVersion(info) => Ok(info),
+        _ => Err("peer did not return a node version response".to_string()),
+    }
+}
+
 fn add_transaction_to_mempool(
     blockchain: &Arc<Mutex<Blockchain>>,
     mempool: &Arc<Mutex<Vec<Transaction>>>,
@@ -3656,6 +3816,7 @@ USAGE:
   xyqon wallet new --name <NAME> --out <FILE>
   xyqon wallet export --wallet <FILE> [--show-private]
   xyqon wallet balance --wallet <FILE> [--chain <FILE>]
+  xyqon version
 
 NODE OPTIONS:
   --listen <ADDR>       Listen for peer blocks, for example 127.0.0.1:7101 or 0.0.0.0:7101 on Linux
@@ -4272,6 +4433,73 @@ mod tests {
         let result = blockchain.add_block(vec![transfer], miner_public_key);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn registered_collection_enforces_minter_and_permanent_lock() {
+        let creator_key = SigningKey::from_bytes(&[9; 32]);
+        let minter_key = SigningKey::from_bytes(&[10; 32]);
+        let outsider_key = SigningKey::from_bytes(&[11; 32]);
+        let miner_key = SigningKey::from_bytes(&[8; 32]);
+        let miner_public_key = bytes_to_hex(miner_key.verifying_key().as_bytes());
+        let minter_public_key = bytes_to_hex(minter_key.verifying_key().as_bytes());
+        let mut blockchain = blockchain_with_genesis();
+
+        let register = Transaction::register_collection(
+            "creator",
+            "ECHOINSTR".to_string(),
+            vec![minter_public_key],
+            Some("ipfs://echo/collection.json".to_string()),
+            true,
+            &creator_key,
+        )
+        .unwrap();
+        blockchain
+            .add_block(vec![register], miner_public_key.clone())
+            .unwrap();
+
+        let unauthorized = Transaction::mint_nft(
+            "outsider",
+            "ECHOINSTR".to_string(),
+            "drum-001".to_string(),
+            "Echo Drum".to_string(),
+            None,
+            &outsider_key,
+        )
+        .unwrap();
+        assert!(blockchain
+            .add_block(vec![unauthorized], miner_public_key.clone())
+            .is_err());
+
+        let authorized = Transaction::mint_nft(
+            "minter",
+            "ECHOINSTR".to_string(),
+            "drum-001".to_string(),
+            "Echo Drum".to_string(),
+            None,
+            &minter_key,
+        )
+        .unwrap();
+        blockchain
+            .add_block(vec![authorized], miner_public_key.clone())
+            .unwrap();
+
+        let lock =
+            Transaction::lock_collection("creator", "ECHOINSTR".to_string(), &creator_key).unwrap();
+        blockchain
+            .add_block(vec![lock], miner_public_key.clone())
+            .unwrap();
+        let update = Transaction::update_collection(
+            "creator",
+            "ECHOINSTR".to_string(),
+            vec![bytes_to_hex(creator_key.verifying_key().as_bytes())],
+            None,
+            &creator_key,
+        )
+        .unwrap();
+        assert!(blockchain
+            .add_block(vec![update], miner_public_key)
+            .is_err());
     }
 
     #[test]

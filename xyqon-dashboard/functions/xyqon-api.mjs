@@ -392,6 +392,7 @@ function normalizeTokenId(tokenId) {
 
 function buildAssets(chain) {
   const coins = new Map();
+  const collections = new Map();
   const nfts = new Map();
 
   const ensureCoin = (symbol, name = symbol, supply = 0) => {
@@ -432,6 +433,19 @@ function buildAssets(chain) {
         record.transactions += 1;
         addCoinBalance(symbol, tx.sender_public_key, -transfer.amount);
         addCoinBalance(symbol, tx.recipient, transfer.amount);
+      } else if (operation.RegisterCollection) {
+        const value = operation.RegisterCollection;
+        const collection = normalizeSymbol(value.collection);
+        collections.set(collection, { collection, creator: tx.sender_public_key,
+          authorizedMinters: value.authorized_minters, metadataUrl: value.metadata_url ?? null,
+          authorityMutable: value.authority_mutable, locked: false, registeredInBlock: block.index });
+      } else if (operation.UpdateCollection) {
+        const value = operation.UpdateCollection;
+        const record = collections.get(normalizeSymbol(value.collection));
+        if (record) { record.authorizedMinters = value.authorized_minters; record.metadataUrl = value.metadata_url ?? null; }
+      } else if (operation.LockCollection) {
+        const record = collections.get(normalizeSymbol(operation.LockCollection.collection));
+        if (record) record.locked = true;
       } else if (operation.MintNft) {
         const nft = operation.MintNft;
         const collection = normalizeSymbol(nft.collection);
@@ -471,6 +485,7 @@ function buildAssets(chain) {
           .sort((a, b) => b.balance - a.balance)
       }))
       .sort((a, b) => a.symbol.localeCompare(b.symbol)),
+    collections: [...collections.values()].sort((a, b) => a.collection.localeCompare(b.collection)),
     nfts: [...nfts.values()].sort((a, b) =>
       `${a.collection}:${a.tokenId}`.localeCompare(`${b.collection}:${b.tokenId}`)
     )
@@ -559,6 +574,7 @@ async function getDashboard() {
     richList: balances.slice(0, 25),
     publicAddresses: balances,
     coins: assets.coins,
+    collections: assets.collections,
     nfts: assets.nfts,
     recentBlocks: chain.chain.slice(-8).reverse(),
     recentTransactions: transactions.slice(-12).reverse()

@@ -52,6 +52,20 @@ The app has these command groups:
 - `mine`: run a miner that competes for block rewards
 - `wallet`: create or inspect wallet keys
 
+Show the installed node and network protocol versions:
+
+```bash
+xyqon version
+```
+
+Version `0.2.0` introduces protocol version `2`. Running nodes query trusted miner peers every
+60 seconds. If at least two trusted peers report a higher protocol version, the outdated process
+exits with an `UPGRADE REQUIRED` message and stops accepting transactions, blocks, or mining until
+the operator installs the newer binary and restarts it. A single peer cannot trigger this gate.
+
+This mechanism protects upgrades after `0.2.0`; binaries older than `0.2.0` do not understand the
+version request and must be upgraded manually during this rollout.
+
 ## Peer List
 
 Nodes can load known peers from a newline-separated file. Each line may contain either an IP address or an `IP:PORT` address. If no port is supplied, XYQON uses port `7101`.
@@ -244,6 +258,14 @@ xyqon coin send \
 ```
 
 ## Mint An NFT
+
+For production NFTs, first register the collection with `xyqon-client`. Registered collections
+record their creator, metadata URL, authorized minters, mutability, and permanent lock state
+on-chain. Once registered, nodes reject mints from wallets outside the authorized list. Existing
+unregistered collections remain supported for live-chain compatibility.
+
+Deploy the updated node binary to every XYQON server before submitting the first collection
+registration transaction. Older nodes cannot decode the new asset-operation variants.
 
 Use `nft mint` to mint a unique game item or collectible on XYQON. NFT minting is a signed `0 XYQON` transaction. The optional image URL points to external artwork, keeping the blockchain focused on ownership and metadata instead of storing image data.
 

@@ -9,10 +9,13 @@ import {
   getBalance,
   getBestChain,
   loadWallet,
+  lockCollection,
   mintNft,
+  registerCollection,
   saveWallet,
   sendCoin,
   transferNft,
+  updateCollection,
   sendTransaction
 } from './index.js';
 
@@ -49,6 +52,9 @@ ${color('bold', 'Usage')}
   xyqon send --to <PUBLIC_KEY> --amount <AMOUNT> [--fee <AMOUNT>] [--wallet <FILE>]
   xyqon coin create --symbol <SYMBOL> --name <NAME> --supply <AMOUNT> [--wallet <FILE>]
   xyqon coin send --symbol <SYMBOL> --to <PUBLIC_KEY> --amount <AMOUNT> [--wallet <FILE>]
+  xyqon collection register --collection <SYMBOL> [--minter <PUBLIC_KEY>] [--metadata-url <URL>] [--immutable]
+  xyqon collection update --collection <SYMBOL> --minter <PUBLIC_KEY> [--metadata-url <URL>]
+  xyqon collection lock --collection <SYMBOL>
   xyqon nft mint --collection <SYMBOL> --token-id <ID> --name <NAME> [--image-url <URL>] [--wallet <FILE>]
   xyqon nft send --collection <SYMBOL> --token-id <ID> --to <PUBLIC_KEY> [--wallet <FILE>]
   xyqon nodes
@@ -84,7 +90,7 @@ function parseArgs(argv) {
     }
 
     const key = item.slice(2);
-    if (key === 'private' || key === 'force') {
+    if (key === 'private' || key === 'force' || key === 'immutable') {
       values[key] = true;
       continue;
     }
@@ -95,8 +101,8 @@ function parseArgs(argv) {
     }
     index += 1;
 
-    if (key === 'peer') {
-      values.peer = [...(values.peer ?? []), value];
+    if (key === 'peer' || key === 'minter') {
+      values[key] = [...(values[key] ?? []), value];
     } else {
       values[key] = value;
     }
@@ -112,8 +118,9 @@ function peersFromOptions(options) {
 async function run() {
   const argv = process.argv.slice(2);
   const command = argv[0];
-  const subcommand = command === 'wallet' || command === 'coin' || command === 'nft' ? argv[1] : undefined;
-  const rest = command === 'wallet' || command === 'coin' || command === 'nft' ? argv.slice(2) : argv.slice(1);
+  const grouped = command === 'wallet' || command === 'coin' || command === 'nft' || command === 'collection';
+  const subcommand = grouped ? argv[1] : undefined;
+  const rest = grouped ? argv.slice(2) : argv.slice(1);
   const options = parseArgs(rest);
 
   if (!command || command === 'help' || command === '--help' || command === '-h') {
@@ -243,6 +250,42 @@ async function run() {
     console.log(`${color('bold', 'Transaction ID:')} ${result.transactionId}`);
     console.log(`${color('dim', 'Checked balance:')} ${result.preflight.balance} ${result.preflight.symbol} at block ${result.preflight.blockHeight}`);
     printDelivery(result);
+    return;
+  }
+
+  if (command === 'collection' && subcommand === 'register') {
+    if (!options.collection) throw new Error('collection register requires --collection <SYMBOL>');
+    const wallet = await loadWallet(options.wallet ?? DEFAULT_WALLET_PATH);
+    const result = await registerCollection({
+      wallet, collection: options.collection,
+      authorizedMinters: options.minter?.length ? options.minter : [wallet.public_key],
+      metadataUrl: options['metadata-url'], authorityMutable: !options.immutable,
+      peers: peersFromOptions(options)
+    });
+    printHero('Collection Registered');
+    console.log(`${color('bold', 'Collection:')} ${result.transaction.asset_operation.RegisterCollection.collection}`);
+    console.log(`${color('bold', 'Transaction ID:')} ${result.transactionId}`);
+    printDelivery(result, 'Broadcast');
+    return;
+  }
+
+  if (command === 'collection' && subcommand === 'update') {
+    if (!options.collection || !options.minter?.length) throw new Error('collection update requires --collection <SYMBOL> and --minter <PUBLIC_KEY>');
+    const wallet = await loadWallet(options.wallet ?? DEFAULT_WALLET_PATH);
+    const result = await updateCollection({ wallet, collection: options.collection, authorizedMinters: options.minter, metadataUrl: options['metadata-url'], peers: peersFromOptions(options) });
+    printHero('Collection Updated');
+    console.log(`${color('bold', 'Transaction ID:')} ${result.transactionId}`);
+    printDelivery(result, 'Broadcast');
+    return;
+  }
+
+  if (command === 'collection' && subcommand === 'lock') {
+    if (!options.collection) throw new Error('collection lock requires --collection <SYMBOL>');
+    const wallet = await loadWallet(options.wallet ?? DEFAULT_WALLET_PATH);
+    const result = await lockCollection({ wallet, collection: options.collection, peers: peersFromOptions(options) });
+    printHero('Collection Locked');
+    console.log(`${color('bold', 'Transaction ID:')} ${result.transactionId}`);
+    printDelivery(result, 'Broadcast');
     return;
   }
 

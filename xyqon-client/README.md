@@ -107,6 +107,26 @@ Before broadcasting a coin transfer, the client checks the best reachable public
 
 ## Mint And Send NFTs
 
+Register a protected collection before minting production NFTs. The registering wallet becomes
+the collection creator. Repeat `--minter` to authorize multiple wallets; omit it to authorize the
+creator wallet. `--immutable` prevents all later registry updates.
+
+```bash
+xyqon collection register \
+  --collection ECHOINSTR \
+  --minter GAME_MINTER_PUBLIC_KEY \
+  --metadata-url ipfs://COLLECTION_METADATA
+
+xyqon collection update \
+  --collection ECHOINSTR \
+  --minter REPLACEMENT_MINTER_PUBLIC_KEY
+
+xyqon collection lock --collection ECHOINSTR
+```
+
+Locking is permanent and freezes the metadata and authorized-minter list. It does not stop the
+already-authorized wallets from minting.
+
 ```bash
 xyqon nft mint \
   --collection ITEMS \
@@ -159,6 +179,9 @@ import {
   sendTransaction,
   createCoin,
   sendCoin,
+  registerCollection,
+  updateCollection,
+  lockCollection,
   mintNft,
   transferNft,
   getCreatedCoins,
@@ -191,6 +214,14 @@ await sendCoin({
   recipient: 'RECIPIENT_PUBLIC_KEY',
   symbol: 'GAME',
   amount: 25
+});
+
+await registerCollection({
+  wallet,
+  collection: 'ECHOINSTR',
+  authorizedMinters: [wallet.public_key],
+  metadataUrl: 'ipfs://COLLECTION_METADATA',
+  authorityMutable: true
 });
 
 await mintNft({
