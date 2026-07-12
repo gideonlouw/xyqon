@@ -109,6 +109,7 @@ impl AssetOperation {
         }))
     }
 
+    #[cfg(test)]
     pub fn register_collection(
         collection: String,
         authorized_minters: Vec<String>,
@@ -123,6 +124,7 @@ impl AssetOperation {
         }))
     }
 
+    #[cfg(test)]
     pub fn update_collection(
         collection: String,
         authorized_minters: Vec<String>,
@@ -135,6 +137,7 @@ impl AssetOperation {
         }))
     }
 
+    #[cfg(test)]
     pub fn lock_collection(collection: String) -> Result<Self, String> {
         Ok(AssetOperation::LockCollection(CollectionLock {
             collection: normalize_symbol(&collection)?,
@@ -237,10 +240,6 @@ impl AssetLedger {
             .balances
             .get(&(symbol.to_ascii_uppercase(), public_key.to_string()))
             .unwrap_or(&0.0)
-    }
-
-    pub fn collection(&self, collection: &str) -> Option<&CollectionRecord> {
-        self.collections.get(&collection.to_ascii_uppercase())
     }
 
     #[cfg(test)]

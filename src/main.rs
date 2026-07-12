@@ -363,6 +363,7 @@ struct Transaction {
 }
 
 impl Transaction {
+    #[cfg(test)]
     fn new(sender: &str, recipient: &str, amount: f64, signing_key: &SigningKey) -> Self {
         Transaction::new_with_fee(sender, recipient, amount, 0.0, signing_key)
     }
@@ -466,6 +467,7 @@ impl Transaction {
         })
     }
 
+    #[cfg(test)]
     fn register_collection(
         sender: &str,
         collection: String,
@@ -483,6 +485,7 @@ impl Transaction {
         Ok(Self::signed_asset(sender, operation, signing_key))
     }
 
+    #[cfg(test)]
     fn update_collection(
         sender: &str,
         collection: String,
@@ -495,6 +498,7 @@ impl Transaction {
         Ok(Self::signed_asset(sender, operation, signing_key))
     }
 
+    #[cfg(test)]
     fn lock_collection(
         sender: &str,
         collection: String,
@@ -504,6 +508,7 @@ impl Transaction {
         Ok(Self::signed_asset(sender, operation, signing_key))
     }
 
+    #[cfg(test)]
     fn signed_asset(
         sender: &str,
         asset_operation: AssetOperation,
@@ -915,17 +920,6 @@ impl Block {
             .iter()
             .map(Transaction::fee_amount)
             .sum()
-    }
-
-    fn coinbase_amount(&self) -> f64 {
-        if self.index == 0 {
-            return 0.0;
-        }
-
-        self.transactions
-            .first()
-            .map(|transaction| transaction.amount)
-            .unwrap_or(0.0)
     }
 
     fn normal_transactions(&self) -> &[Transaction] {
