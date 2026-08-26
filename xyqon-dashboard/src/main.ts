@@ -998,7 +998,7 @@ class App {
   orderBusy = signal(false);
   communityMessage = signal<string | null>(null);
   orderMessage = signal<string | null>(null);
-  readonly discordCommunityUrl: string | null = null;
+  readonly discordCommunityUrl = 'https://discord.gg/Pz8HfhxX2';
   readonly exchangeRate = 16.5;
   readonly usdtAddress = '0x2b7e15382b09f41024ee9a20d2cb7905f8b02785';
   readonly hoodiePriceUsd = 500 / this.exchangeRate;
