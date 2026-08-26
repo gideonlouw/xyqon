@@ -4104,24 +4104,47 @@ mod tests {
         let miner_public_key = bytes_to_hex(miner_key.verifying_key().as_bytes());
         let recipient_key = SigningKey::from_bytes(&[11; 32]);
         let recipient_public_key = bytes_to_hex(recipient_key.verifying_key().as_bytes());
+        let competing_miner_key = SigningKey::from_bytes(&[13; 32]);
+        let competing_miner_public_key =
+            bytes_to_hex(competing_miner_key.verifying_key().as_bytes());
         let mut blockchain = blockchain_with_genesis();
 
+        let setup_transaction = Transaction::create_coin(
+            "miner",
+            "TEST".to_string(),
+            "Test Coin".to_string(),
+            1.0,
+            &miner_key,
+        )
+        .expect("setup transaction should build");
         blockchain
-            .add_block(vec![], miner_public_key.clone())
-            .expect("coinbase-only block should mine");
+            .add_block(vec![setup_transaction], miner_public_key.clone())
+            .expect("funding block should mine");
 
         let blockchain = Arc::new(Mutex::new(blockchain));
         let mempool = Arc::new(Mutex::new(Vec::new()));
-        let pending_spend = Transaction::new("miner", &recipient_public_key, 7.0, &miner_key);
+        let pending_spend = Transaction::new_with_fee(
+            "miner",
+            &recipient_public_key,
+            7.0,
+            DEFAULT_XYQON_TRANSACTION_FEE,
+            &miner_key,
+        );
 
         add_transaction_to_mempool(&blockchain, &mempool, pending_spend)
             .expect("pending transaction should be valid before the competing spend");
 
         {
             let mut blockchain = blockchain.lock().expect("blockchain lock should work");
-            let competing_spend = Transaction::new("miner", &recipient_public_key, 5.0, &miner_key);
+            let competing_spend = Transaction::new_with_fee(
+                "miner",
+                &recipient_public_key,
+                5.0,
+                DEFAULT_XYQON_TRANSACTION_FEE,
+                &miner_key,
+            );
             blockchain
-                .add_block(vec![competing_spend], miner_public_key)
+                .add_block(vec![competing_spend], competing_miner_public_key)
                 .expect("competing spend should be accepted");
         }
 
@@ -4503,8 +4526,16 @@ mod tests {
         let mut local = blockchain_with_genesis();
         let mut candidate = blockchain_with_genesis();
 
+        let setup_transaction = Transaction::create_coin(
+            "miner",
+            "TEST".to_string(),
+            "Test Coin".to_string(),
+            1.0,
+            &miner_key,
+        )
+        .expect("setup transaction should build");
         candidate
-            .add_block(vec![], miner_public_key)
+            .add_block(vec![setup_transaction], miner_public_key)
             .expect("candidate should mine a better chain");
 
         assert!(local

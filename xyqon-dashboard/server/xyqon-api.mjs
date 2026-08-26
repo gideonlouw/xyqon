@@ -628,6 +628,34 @@ async function getAssets() {
   return { sourceNode: best?.peer ?? null, ...buildAssets(chain) };
 }
 
+async function getHealth() {
+  const { knownPeers, results, nodes, best, chain } = await getNetworkSnapshot();
+  const validResults = results.filter((result) => result.chainValid);
+  const reachableNodeCount = results.filter((result) => result.online).length;
+  const tipHashes = new Set(
+    validResults
+      .map((result) => result.chain?.chain?.at(-1)?.hash)
+      .filter(Boolean)
+  );
+  const latestBlock = chain.chain.at(-1) ?? null;
+  const tipAgreement = validResults.length > 0 && tipHashes.size === 1;
+  const minimumConsensusNodes = Math.min(2, knownPeers.length);
+  const ok = Boolean(best && validResults.length >= minimumConsensusNodes && tipAgreement);
+
+  return {
+    ok,
+    generatedAt: new Date().toISOString(),
+    nodeCount: knownPeers.length,
+    reachableNodeCount,
+    validNodeCount: validResults.length,
+    consensusHeight: latestBlock?.index ?? null,
+    tipAgreement,
+    tipHash: latestBlock?.hash ?? null,
+    lastBlockTime: latestBlock ? new Date(latestBlock.timestamp * 1000).toISOString() : null,
+    nodes
+  };
+}
+
 async function sendJson(response, status, body) {
   response.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
@@ -674,7 +702,16 @@ async function handleRequest(request, response) {
   }
 
   if (path === '/api/health') {
-    await sendJson(response, 200, { ok: true });
+    try {
+      const health = await getHealth();
+      await sendJson(response, health.ok ? 200 : 503, health);
+    } catch (error) {
+      await sendJson(response, 503, {
+        ok: false,
+        generatedAt: new Date().toISOString(),
+        error: error.message
+      });
+    }
     return;
   }
 

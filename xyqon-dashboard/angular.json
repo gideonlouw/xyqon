@@ -31,7 +31,7 @@
               "fileReplacements": [
                 {
                   "replace": "src/environments/firebase-config.ts",
-                  "with": "src/environments/firebase-config.local.ts"
+                  "with": "src/environments/firebase-config.production.ts"
                 }
               ],
               "budgets": [

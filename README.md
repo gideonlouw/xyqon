@@ -33,6 +33,34 @@ cargo --version
 cargo build
 ```
 
+## Signed Releases
+
+Official releases provide Windows and Linux binaries with four files per platform:
+
+- the executable
+- a `.sha256` checksum
+- a Sigstore `.sig` signature
+- a Sigstore `.pem` signing certificate
+
+Download them from [GitHub Releases](https://github.com/gideonlouw/xyqon/releases).
+
+Check the downloaded checksum:
+
+```bash
+sha256sum --check xyqon-v0.2.0-linux-x86_64.sha256
+```
+
+Verify the keyless GitHub Actions signature with Cosign:
+
+```bash
+cosign verify-blob \
+  --certificate xyqon-v0.2.0-linux-x86_64.pem \
+  --signature xyqon-v0.2.0-linux-x86_64.sig \
+  --certificate-identity-regexp '^https://github.com/gideonlouw/xyqon/.github/workflows/release.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  xyqon-v0.2.0-linux-x86_64
+```
+
 For Linux server deployment, firewall setup, systemd setup, and joining instructions, see:
 
 [docs/linux-live.md](docs/linux-live.md)

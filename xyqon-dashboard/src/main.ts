@@ -162,14 +162,11 @@ const firebaseRuntime = loadFirebaseRuntime();
           <span>Xyqon</span>
         </a>
         <div class="nav-links">
+          <a href="https://github.com/gideonlouw/xyqon#run-a-node" target="_blank" rel="noopener">Run a Node</a>
+          <a href="/developers" (click)="navigate($event, 'developers')">Build with JavaScript</a>
           <a href="/dashboard" (click)="navigate($event, 'dashboard')">Dashboard</a>
           <a href="/explorer" (click)="navigate($event, 'explorer')">Block Explorer</a>
-          <a href="/developers" (click)="navigate($event, 'developers')">Developers</a>
-          <a href="/clothing" (click)="navigate($event, 'clothing')">Clothing</a>
           <a href="/community" (click)="navigate($event, 'community')">Community</a>
-          @if (user()) {
-            <a href="https://discord.gg/sTZ6MJBU" target="_blank" rel="noopener noreferrer">Discord</a>
-          }
         </div>
       </nav>
 
@@ -184,8 +181,12 @@ const firebaseRuntime = loadFirebaseRuntime();
               that helps test, improve, and grow the project.
             </p>
             <div class="hero-actions">
-              <a class="primary-action" href="/dashboard" (click)="navigate($event, 'dashboard')">View Nodes Dashboard</a>
-              <a class="secondary-action" href="/explorer" (click)="navigate($event, 'explorer')">Open Block Explorer</a>
+              <a class="primary-action" href="https://github.com/gideonlouw/xyqon#run-a-node" target="_blank" rel="noopener">Run a Node</a>
+              <a class="secondary-action" href="/developers" (click)="navigate($event, 'developers')">Build with JavaScript</a>
+            </div>
+            <div class="supporting-actions">
+              <a href="/dashboard" (click)="navigate($event, 'dashboard')">View network dashboard</a>
+              <a href="/explorer" (click)="navigate($event, 'explorer')">Open block explorer</a>
             </div>
           </div>
           <aside class="network-card" aria-label="Network snapshot">
@@ -210,24 +211,24 @@ const firebaseRuntime = loadFirebaseRuntime();
 
         <section class="public-links" aria-label="Public project links">
           <article>
+            <h2>Run a Node</h2>
+            <p>Join the peer network, synchronize the chain, and improve XYQON's provider and geographic resilience.</p>
+            <a href="https://github.com/gideonlouw/xyqon#run-a-node" target="_blank" rel="noopener">Open node guide</a>
+          </article>
+          <article>
+            <h2>Build with JavaScript</h2>
+            <p>Create wallets, send transactions, and build coins, NFTs, games, and community tools with npm.</p>
+            <a href="/developers" (click)="navigate($event, 'developers')">Start five-minute tutorial</a>
+          </article>
+          <article>
             <h2>Live Dashboard</h2>
             <p>See public node health, block height, circulating supply, recent blocks, coins, NFTs, and rich-list data.</p>
             <a href="/dashboard" (click)="navigate($event, 'dashboard')">View dashboard</a>
           </article>
           <article>
-            <h2>Block Explorer</h2>
-            <p>Search the current chain by public address, block height, block hash, or transaction id without signing in.</p>
-            <a href="/explorer" (click)="navigate($event, 'explorer')">Search explorer</a>
-          </article>
-          <article>
             <h2>Community</h2>
-            <p>Sign in with Google to register as a Xyqon community member and share how you want to contribute.</p>
+            <p>Join builders, node operators, testers, and contributors helping the public network grow.</p>
             <a href="/community" (click)="navigate($event, 'community')">Join community</a>
-          </article>
-          <article>
-            <h2>Clothing</h2>
-            <p>Preview Xyqon branded hoodies and T-shirts, choose your size, and pay with USDT.</p>
-            <a href="/clothing" (click)="navigate($event, 'clothing')">View clothing</a>
           </article>
         </section>
 
@@ -294,6 +295,42 @@ const firebaseRuntime = loadFirebaseRuntime();
             </article>
           </div>
 
+          <section class="quickstart" aria-labelledby="quickstart-title">
+            <header>
+              <p class="eyebrow">FIVE-MINUTE QUICKSTART</p>
+              <h2 id="quickstart-title">Create a wallet, receive XYQON, and send your first transaction.</h2>
+              <p>Node.js 20 or newer is the only prerequisite. Your wallet file contains your private key—keep it private and never share it.</p>
+            </header>
+            <ol class="quickstart-steps">
+              <li>
+                <div><span>1</span><strong>Install client 0.6.0</strong></div>
+                <pre><code>npm install -g xyqon&#64;0.6.0</code></pre>
+              </li>
+              <li>
+                <div><span>2</span><strong>Create your wallet</strong></div>
+                <pre><code>xyqon wallet new --name "Your name"</code></pre>
+                <p>This creates <code>xyqon.wallet.json</code> in the current directory.</p>
+              </li>
+              <li>
+                <div><span>3</span><strong>Copy your public address</strong></div>
+                <pre><code>xyqon wallet show</code></pre>
+                <p>Share only the public key with an existing holder who can send you test funds.</p>
+              </li>
+              <li>
+                <div><span>4</span><strong>Confirm the funds arrived</strong></div>
+                <pre><code>xyqon balance</code></pre>
+                <p>A miner must include the incoming transaction before the balance is confirmed.</p>
+              </li>
+              <li>
+                <div><span>5</span><strong>Send your first transaction</strong></div>
+                <pre><code>xyqon send \
+  --to RECIPIENT_PUBLIC_KEY \
+  --amount 0.5</code></pre>
+                <p>The client verifies that a reachable node reports the transaction as pending or confirmed.</p>
+              </li>
+            </ol>
+          </section>
+
           <section class="package-docs" aria-labelledby="package-docs-title">
             <header class="package-docs-header">
               <div>
@@ -311,7 +348,7 @@ const firebaseRuntime = loadFirebaseRuntime();
                 <dl>
                   <div>
                     <dt>Version</dt>
-                    <dd>0.4.0</dd>
+                    <dd>0.6.0</dd>
                   </div>
                   <div>
                     <dt>License</dt>
@@ -629,9 +666,11 @@ const coinHoldings = await getCoinHoldings(wallet);</code></pre>
               <p>{{ activeUser.email }}</p>
               <div class="member-status">Active member</div>
               <p>Your profile is connected. Use Sync Profile if your Google name or email changes.</p>
-              <a class="discord-community-link" href="https://discord.gg/sTZ6MJBU" target="_blank" rel="noopener noreferrer">
-                Join the Discord community
-              </a>
+              @if (discordCommunityUrl) {
+                <a class="discord-community-link" [href]="discordCommunityUrl" target="_blank" rel="noopener noreferrer">
+                  Join the Discord community
+                </a>
+              }
             } @else {
               <span>Membership</span>
               <strong>Google sign-in required</strong>
@@ -935,6 +974,15 @@ const coinHoldings = await getCoinHoldings(wallet);</code></pre>
           <section class="loading">Loading network data...</section>
         }
       }
+
+      <footer class="site-footer">
+        <span>XYQON is an open-source community network.</span>
+        <nav aria-label="Secondary">
+          <a href="https://github.com/gideonlouw/xyqon" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://www.npmjs.com/package/xyqon" target="_blank" rel="noopener">npm</a>
+          <a href="/clothing" (click)="navigate($event, 'clothing')">Merch</a>
+        </nav>
+      </footer>
     </main>
   `
 })
@@ -950,6 +998,7 @@ class App {
   orderBusy = signal(false);
   communityMessage = signal<string | null>(null);
   orderMessage = signal<string | null>(null);
+  readonly discordCommunityUrl: string | null = null;
   readonly exchangeRate = 16.5;
   readonly usdtAddress = '0x2b7e15382b09f41024ee9a20d2cb7905f8b02785';
   readonly hoodiePriceUsd = 500 / this.exchangeRate;
