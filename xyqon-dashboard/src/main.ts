@@ -131,7 +131,19 @@ type FirebaseRuntime = {
   serverTimestamp: () => unknown;
 };
 
-type Page = 'home' | 'dashboard' | 'explorer' | 'community' | 'developers' | 'clothing';
+type Page = 'home' | 'run-a-node' | 'dashboard' | 'explorer' | 'community' | 'developers' | 'clothing';
+
+type TranslationLanguage = {
+  code: string;
+  name: string;
+};
+
+type SeoConfig = {
+  title: string;
+  description: string;
+  path: string;
+  index: boolean;
+};
 
 type ClothingProduct = {
   id: string;
@@ -151,6 +163,149 @@ type ClothingOrderDraft = {
 
 const firebaseRuntime = loadFirebaseRuntime();
 
+const translationLanguages: TranslationLanguage[] = [
+  { code: 'af', name: 'Afrikaans' },
+  { code: 'sq', name: 'Albanian' },
+  { code: 'am', name: 'Amharic' },
+  { code: 'ar', name: 'Arabic' },
+  { code: 'hy', name: 'Armenian' },
+  { code: 'as', name: 'Assamese' },
+  { code: 'ay', name: 'Aymara' },
+  { code: 'az', name: 'Azerbaijani' },
+  { code: 'bm', name: 'Bambara' },
+  { code: 'eu', name: 'Basque' },
+  { code: 'be', name: 'Belarusian' },
+  { code: 'bn', name: 'Bengali' },
+  { code: 'bho', name: 'Bhojpuri' },
+  { code: 'bs', name: 'Bosnian' },
+  { code: 'bg', name: 'Bulgarian' },
+  { code: 'ca', name: 'Catalan' },
+  { code: 'ceb', name: 'Cebuano' },
+  { code: 'zh-CN', name: 'Chinese (Simplified)' },
+  { code: 'zh-TW', name: 'Chinese (Traditional)' },
+  { code: 'co', name: 'Corsican' },
+  { code: 'hr', name: 'Croatian' },
+  { code: 'cs', name: 'Czech' },
+  { code: 'da', name: 'Danish' },
+  { code: 'dv', name: 'Dhivehi' },
+  { code: 'doi', name: 'Dogri' },
+  { code: 'nl', name: 'Dutch' },
+  { code: 'en', name: 'English' },
+  { code: 'eo', name: 'Esperanto' },
+  { code: 'et', name: 'Estonian' },
+  { code: 'ee', name: 'Ewe' },
+  { code: 'fil', name: 'Filipino' },
+  { code: 'fi', name: 'Finnish' },
+  { code: 'fr', name: 'French' },
+  { code: 'fy', name: 'Frisian' },
+  { code: 'gl', name: 'Galician' },
+  { code: 'ka', name: 'Georgian' },
+  { code: 'de', name: 'German' },
+  { code: 'el', name: 'Greek' },
+  { code: 'gn', name: 'Guarani' },
+  { code: 'gu', name: 'Gujarati' },
+  { code: 'ht', name: 'Haitian Creole' },
+  { code: 'ha', name: 'Hausa' },
+  { code: 'haw', name: 'Hawaiian' },
+  { code: 'he', name: 'Hebrew' },
+  { code: 'hi', name: 'Hindi' },
+  { code: 'hmn', name: 'Hmong' },
+  { code: 'hu', name: 'Hungarian' },
+  { code: 'is', name: 'Icelandic' },
+  { code: 'ig', name: 'Igbo' },
+  { code: 'ilo', name: 'Ilocano' },
+  { code: 'id', name: 'Indonesian' },
+  { code: 'ga', name: 'Irish' },
+  { code: 'it', name: 'Italian' },
+  { code: 'ja', name: 'Japanese' },
+  { code: 'jv', name: 'Javanese' },
+  { code: 'kn', name: 'Kannada' },
+  { code: 'kk', name: 'Kazakh' },
+  { code: 'km', name: 'Khmer' },
+  { code: 'rw', name: 'Kinyarwanda' },
+  { code: 'ko', name: 'Korean' },
+  { code: 'kri', name: 'Krio' },
+  { code: 'ku', name: 'Kurdish (Kurmanji)' },
+  { code: 'ckb', name: 'Kurdish (Sorani)' },
+  { code: 'ky', name: 'Kyrgyz' },
+  { code: 'lo', name: 'Lao' },
+  { code: 'la', name: 'Latin' },
+  { code: 'lv', name: 'Latvian' },
+  { code: 'ln', name: 'Lingala' },
+  { code: 'lt', name: 'Lithuanian' },
+  { code: 'lg', name: 'Luganda' },
+  { code: 'lb', name: 'Luxembourgish' },
+  { code: 'mk', name: 'Macedonian' },
+  { code: 'mai', name: 'Maithili' },
+  { code: 'mg', name: 'Malagasy' },
+  { code: 'ms', name: 'Malay' },
+  { code: 'ml', name: 'Malayalam' },
+  { code: 'mt', name: 'Maltese' },
+  { code: 'mi', name: 'Maori' },
+  { code: 'mr', name: 'Marathi' },
+  { code: 'mn', name: 'Mongolian' },
+  { code: 'my', name: 'Myanmar (Burmese)' },
+  { code: 'ne', name: 'Nepali' },
+  { code: 'no', name: 'Norwegian' },
+  { code: 'ny', name: 'Nyanja' },
+  { code: 'or', name: 'Odia' },
+  { code: 'om', name: 'Oromo' },
+  { code: 'ps', name: 'Pashto' },
+  { code: 'fa', name: 'Persian' },
+  { code: 'pl', name: 'Polish' },
+  { code: 'pt', name: 'Portuguese' },
+  { code: 'pa', name: 'Punjabi' },
+  { code: 'qu', name: 'Quechua' },
+  { code: 'ro', name: 'Romanian' },
+  { code: 'ru', name: 'Russian' },
+  { code: 'sm', name: 'Samoan' },
+  { code: 'sa', name: 'Sanskrit' },
+  { code: 'gd', name: 'Scots Gaelic' },
+  { code: 'nso', name: 'Sepedi' },
+  { code: 'sr', name: 'Serbian' },
+  { code: 'st', name: 'Sesotho' },
+  { code: 'sn', name: 'Shona' },
+  { code: 'sd', name: 'Sindhi' },
+  { code: 'si', name: 'Sinhala' },
+  { code: 'sk', name: 'Slovak' },
+  { code: 'sl', name: 'Slovenian' },
+  { code: 'so', name: 'Somali' },
+  { code: 'es', name: 'Spanish' },
+  { code: 'su', name: 'Sundanese' },
+  { code: 'sw', name: 'Swahili' },
+  { code: 'sv', name: 'Swedish' },
+  { code: 'tg', name: 'Tajik' },
+  { code: 'ta', name: 'Tamil' },
+  { code: 'tt', name: 'Tatar' },
+  { code: 'te', name: 'Telugu' },
+  { code: 'th', name: 'Thai' },
+  { code: 'ti', name: 'Tigrinya' },
+  { code: 'ts', name: 'Tsonga' },
+  { code: 'tr', name: 'Turkish' },
+  { code: 'tk', name: 'Turkmen' },
+  { code: 'ak', name: 'Twi' },
+  { code: 'uk', name: 'Ukrainian' },
+  { code: 'ur', name: 'Urdu' },
+  { code: 'ug', name: 'Uyghur' },
+  { code: 'uz', name: 'Uzbek' },
+  { code: 'vi', name: 'Vietnamese' },
+  { code: 'cy', name: 'Welsh' },
+  { code: 'xh', name: 'Xhosa' },
+  { code: 'yi', name: 'Yiddish' },
+  { code: 'yo', name: 'Yoruba' },
+  { code: 'zu', name: 'Zulu' }
+];
+
+const seoByPage: Record<Page, SeoConfig> = {
+  home: { title: 'XYQON | Open Blockchain Network', description: 'Discover XYQON, run an independent blockchain node, inspect the live network, or build wallets, coins, NFTs, and apps with JavaScript.', path: '/', index: true },
+  'run-a-node': { title: 'Run a XYQON Node | Linux Setup Guide', description: 'Join the XYQON peer-to-peer network with this practical Linux node setup guide, including ports, peers, synchronization, and mining preparation.', path: '/run-a-node', index: true },
+  developers: { title: 'Build with JavaScript | XYQON Developer Guide', description: 'Install the XYQON npm client, create a wallet, receive funds, send a transaction, and build coins, NFTs, games, and community tools.', path: '/developers', index: true },
+  dashboard: { title: 'Live XYQON Network Dashboard', description: 'Monitor live XYQON nodes, consensus height, circulating supply, recent blocks, public addresses, coins, NFTs, and network activity.', path: '/dashboard', index: true },
+  explorer: { title: 'XYQON Block Explorer', description: 'Search the XYQON blockchain by public address, block height, block hash, or transaction ID and inspect recent confirmed activity.', path: '/explorer', index: true },
+  community: { title: 'Join the XYQON Community', description: 'Meet XYQON node operators, miners, builders, testers, and contributors and join the public community on Discord and GitHub.', path: '/community', index: true },
+  clothing: { title: 'XYQON Community Merchandise', description: 'Community merchandise for XYQON supporters.', path: '/clothing', index: false }
+};
+
 @Component({
   selector: 'app-root',
   imports: [CurrencyPipe, DecimalPipe, DatePipe, NgClass],
@@ -162,13 +317,29 @@ const firebaseRuntime = loadFirebaseRuntime();
           <span>Xyqon</span>
         </a>
         <div class="nav-links">
-          <a href="https://github.com/gideonlouw/xyqon#run-a-node" target="_blank" rel="noopener">Run a Node</a>
+          <a href="/run-a-node" (click)="navigate($event, 'run-a-node')">Run a Node</a>
           <a href="/developers" (click)="navigate($event, 'developers')">Build with JavaScript</a>
           <a href="/dashboard" (click)="navigate($event, 'dashboard')">Dashboard</a>
           <a href="/explorer" (click)="navigate($event, 'explorer')">Block Explorer</a>
           <a href="/community" (click)="navigate($event, 'community')">Community</a>
         </div>
       </nav>
+
+      <section class="language-bar" aria-label="Language translation">
+        <div>
+          <strong>Read XYQON in your language</strong>
+          <span>Translate the page you are viewing with Google Translate.</span>
+        </div>
+        <label>
+          <span class="visually-hidden">Choose a language</span>
+          <select (change)="translatePage($event)" aria-label="Choose a language to translate this page">
+            <option value="" selected>Choose a language</option>
+            @for (language of translationLanguages; track language.code) {
+              <option [value]="language.code">{{ language.name }}</option>
+            }
+          </select>
+        </label>
+      </section>
 
       @if (page() === 'home') {
         <section class="landing-grid">
@@ -181,7 +352,7 @@ const firebaseRuntime = loadFirebaseRuntime();
               that helps test, improve, and grow the project.
             </p>
             <div class="hero-actions">
-              <a class="primary-action" href="https://github.com/gideonlouw/xyqon#run-a-node" target="_blank" rel="noopener">Run a Node</a>
+              <a class="primary-action" href="/run-a-node" (click)="navigate($event, 'run-a-node')">Run a Node</a>
               <a class="secondary-action" href="/developers" (click)="navigate($event, 'developers')">Build with JavaScript</a>
             </div>
             <div class="supporting-actions">
@@ -213,7 +384,7 @@ const firebaseRuntime = loadFirebaseRuntime();
           <article>
             <h2>Run a Node</h2>
             <p>Join the peer network, synchronize the chain, and improve XYQON's provider and geographic resilience.</p>
-            <a href="https://github.com/gideonlouw/xyqon#run-a-node" target="_blank" rel="noopener">Open node guide</a>
+            <a href="/run-a-node" (click)="navigate($event, 'run-a-node')">Open node guide</a>
           </article>
           <article>
             <h2>Build with JavaScript</h2>
@@ -263,6 +434,94 @@ const firebaseRuntime = loadFirebaseRuntime();
           </a>
         </section>
 
+      }
+
+      @if (page() === 'run-a-node') {
+        <section class="page-intro node-guide-intro">
+          <p class="eyebrow">RUN A XYQON NODE</p>
+          <h1>Join the public peer network from your own Linux server.</h1>
+          <p>Run a relay node first, synchronize the valid chain, and help make XYQON more resilient across providers and continents. Mining access is a separate approval step.</p>
+          <div class="hero-actions">
+            <a class="primary-action" href="https://github.com/gideonlouw/xyqon/releases/tag/v0.2.0" target="_blank" rel="noopener">Download signed 0.2.0 release</a>
+            <a class="secondary-action" href="https://github.com/gideonlouw/xyqon/blob/main/docs/linux-live.md" target="_blank" rel="noopener">Open complete Linux guide</a>
+          </div>
+        </section>
+
+        <section class="package-docs-layout node-guide" aria-label="XYQON Linux node setup">
+          <aside class="package-summary">
+            <h2>Before you start</h2>
+            <ul>
+              <li>A Linux server with a stable public IPv4 address</li>
+              <li>Inbound TCP port <code>7101</code> open</li>
+              <li>SSH and administrator access</li>
+              <li>The official signed XYQON 0.2.0 binary</li>
+              <li>Enough storage for the growing chain and mempool</li>
+            </ul>
+            <p>Never share a wallet file or private key. A normal relay node does not require a mining wallet.</p>
+            <nav class="package-links" aria-label="Node operator links">
+              <a href="https://github.com/gideonlouw/xyqon/releases/tag/v0.2.0" target="_blank" rel="noopener">Release downloads</a>
+              <a href="https://github.com/gideonlouw/xyqon/blob/main/README.md#peer-list" target="_blank" rel="noopener">Peer documentation</a>
+              <a href="https://github.com/gideonlouw/xyqon/discussions" target="_blank" rel="noopener">Ask the community</a>
+            </nav>
+          </aside>
+
+          <article class="package-readme">
+            <section>
+              <span id="install" class="anchor-target" aria-hidden="true"></span>
+              <h2>1. Install the verified binary</h2>
+              <p>Download the archive, checksum, signature, and certificate for your operating system from the official release. Verify them before installation.</p>
+              <pre><code>sudo install -m 0755 xyqon /usr/local/bin/xyqon
+xyqon --help</code></pre>
+            </section>
+
+            <section>
+              <span id="storage" class="anchor-target" aria-hidden="true"></span>
+              <h2>2. Prepare node storage</h2>
+              <pre><code>sudo mkdir -p /etc/xyqon /var/lib/xyqon
+sudo chown -R $USER:$USER /etc/xyqon /var/lib/xyqon</code></pre>
+              <p>For a long-running public service, use a dedicated unprivileged <code>xyqon</code> system user as described in the complete Linux guide.</p>
+            </section>
+
+            <section>
+              <span id="peers" class="anchor-target" aria-hidden="true"></span>
+              <h2>3. Add trusted seed peers</h2>
+              <p>Create <code>/etc/xyqon/peers.txt</code> with one peer per line:</p>
+              <pre><code>68.183.98.134:7101
+143.244.149.8:7101
+147.182.138.183:7101</code></pre>
+              <p>Your node will synchronize from these peers, announce itself, and discover other valid XYQON nodes.</p>
+            </section>
+
+            <section>
+              <span id="firewall" class="anchor-target" aria-hidden="true"></span>
+              <h2>4. Open the network port</h2>
+              <pre><code>sudo ufw allow 7101/tcp
+sudo ufw status</code></pre>
+              <p>Also allow inbound TCP 7101 in your cloud firewall or security group.</p>
+            </section>
+
+            <section>
+              <span id="start" class="anchor-target" aria-hidden="true"></span>
+              <h2>5. Start as a relay node</h2>
+              <pre><code>xyqon node --listen 0.0.0.0:7101 --advertise YOUR_PUBLIC_IP:7101 --peers-file /etc/xyqon/peers.txt --trusted-miners-file /etc/xyqon/trusted-miners.json --chain /var/lib/xyqon/xyqon-chain.json</code></pre>
+              <p>Replace <code>YOUR_PUBLIC_IP</code> with the server's stable public IPv4 address. Keep the process running with the systemd service from the complete guide.</p>
+            </section>
+
+            <section>
+              <span id="verify" class="anchor-target" aria-hidden="true"></span>
+              <h2>6. Verify synchronization</h2>
+              <pre><code>ss -ltnp | grep 7101</code></pre>
+              <p>Compare your block height and tip with the <a href="/dashboard" (click)="navigate($event, 'dashboard')">live network dashboard</a>. Your node should remain online and agree with the active chain before requesting miner approval.</p>
+            </section>
+
+            <section>
+              <span id="mining" class="anchor-target" aria-hidden="true"></span>
+              <h2>Want to mine?</h2>
+              <p>First operate a stable relay node. Then share only your public node address and public reward wallet with the community. A current trusted miner must validate and sign the approval before reward blocks from the new miner are accepted.</p>
+              <a class="primary-action" href="https://github.com/gideonlouw/xyqon#add-a-public-miner" target="_blank" rel="noopener">Read miner approval steps</a>
+            </section>
+          </article>
+        </section>
       }
 
       @if (page() === 'developers') {
@@ -999,6 +1258,7 @@ class App {
   communityMessage = signal<string | null>(null);
   orderMessage = signal<string | null>(null);
   readonly discordCommunityUrl = 'https://discord.gg/Pz8HfhxX2';
+  readonly translationLanguages = translationLanguages;
   readonly exchangeRate = 16.5;
   readonly usdtAddress = '0x2b7e15382b09f41024ee9a20d2cb7905f8b02785';
   readonly hoodiePriceUsd = 500 / this.exchangeRate;
@@ -1035,10 +1295,16 @@ class App {
 
   constructor() {
     this.load();
+    this.updateSeo(this.page());
     firebaseRuntime
       .then((firebase) => firebase.onAuthStateChanged(firebase.auth, (user) => this.user.set(user)))
       .catch((error) => this.communityMessage.set(this.authError(error)));
     window.addEventListener('popstate', () => this.page.set(this.routeFromPath()));
+    window.addEventListener('popstate', () => {
+      const page = this.routeFromPath();
+      this.updateSeo(page);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
   }
 
   navigate(event: Event, page: Page) {
@@ -1046,6 +1312,26 @@ class App {
     const path = page === 'home' ? '/' : `/${page}`;
     history.pushState(null, '', path);
     this.page.set(page);
+    this.updateSeo(page);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  translatePage(event: Event) {
+    const select = event.target as HTMLSelectElement;
+    const languageCode = select.value;
+    if (!languageCode) {
+      return;
+    }
+
+    const sourceUrl = new URL(seoByPage[this.page()].path, 'https://xyqon.web.app').toString();
+    select.selectedIndex = 0;
+    if (languageCode === 'en') {
+      window.location.assign(sourceUrl);
+      return;
+    }
+
+    const translateUrl = `https://translate.google.com/translate?sl=en&tl=${encodeURIComponent(languageCode)}&u=${encodeURIComponent(sourceUrl)}`;
+    window.open(translateUrl, '_blank', 'noopener,noreferrer');
   }
 
   selectedSize(productId: string): ClothingSize {
@@ -1253,8 +1539,125 @@ class App {
     }));
   }
 
+  private updateSeo(page: Page) {
+    const seo = seoByPage[page];
+    const canonicalUrl = new URL(seo.path, 'https://xyqon.web.app').toString();
+    const robots = seo.index
+      ? 'index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1'
+      : 'noindex, follow';
+
+    document.documentElement.lang = 'en';
+    document.title = seo.title;
+    this.setMeta('name', 'description', seo.description);
+    this.setMeta('name', 'robots', robots);
+    this.setMeta('name', 'googlebot', robots);
+    this.setMeta('property', 'og:type', 'website');
+    this.setMeta('property', 'og:locale', 'en_US');
+    this.setMeta('property', 'og:title', seo.title);
+    this.setMeta('property', 'og:description', seo.description);
+    this.setMeta('property', 'og:url', canonicalUrl);
+    this.setMeta('name', 'twitter:title', seo.title);
+    this.setMeta('name', 'twitter:description', seo.description);
+
+    let canonical = document.head.querySelector<HTMLLinkElement>('link[rel="canonical"]');
+    if (!canonical) {
+      canonical = document.createElement('link');
+      canonical.rel = 'canonical';
+      document.head.appendChild(canonical);
+    }
+    canonical.href = canonicalUrl;
+
+    const schema = document.getElementById('xyqon-structured-data');
+    if (schema) {
+      schema.textContent = JSON.stringify(this.structuredData(page, seo, canonicalUrl));
+    }
+  }
+
+  private setMeta(attribute: 'name' | 'property', key: string, content: string) {
+    let meta = document.head.querySelector<HTMLMetaElement>(`meta[${attribute}="${key}"]`);
+    if (!meta) {
+      meta = document.createElement('meta');
+      meta.setAttribute(attribute, key);
+      document.head.appendChild(meta);
+    }
+    meta.content = content;
+  }
+
+  private structuredData(page: Page, seo: SeoConfig, canonicalUrl: string) {
+    const graph: Record<string, unknown>[] = [
+      {
+        '@type': 'Organization',
+        '@id': 'https://xyqon.web.app/#organization',
+        name: 'XYQON',
+        url: 'https://xyqon.web.app/',
+        logo: 'https://xyqon.web.app/assets/xyqon-logo.png',
+        sameAs: [
+          'https://github.com/gideonlouw/xyqon',
+          'https://www.npmjs.com/package/xyqon',
+          'https://discord.gg/Pz8HfhxX2'
+        ]
+      },
+      {
+        '@type': 'WebSite',
+        '@id': 'https://xyqon.web.app/#website',
+        name: 'XYQON',
+        url: 'https://xyqon.web.app/',
+        inLanguage: 'en',
+        publisher: { '@id': 'https://xyqon.web.app/#organization' }
+      },
+      {
+        '@type': 'SoftwareApplication',
+        '@id': 'https://xyqon.web.app/#software',
+        name: 'XYQON',
+        applicationCategory: 'DeveloperApplication',
+        operatingSystem: 'Linux, Windows, macOS',
+        softwareVersion: '0.2.0',
+        url: 'https://xyqon.web.app/',
+        downloadUrl: 'https://github.com/gideonlouw/xyqon/releases/tag/v0.2.0',
+        license: 'https://github.com/gideonlouw/xyqon/blob/main/LICENSE'
+      },
+      {
+        '@type': 'WebPage',
+        '@id': `${canonicalUrl}#webpage`,
+        name: seo.title,
+        description: seo.description,
+        url: canonicalUrl,
+        inLanguage: 'en',
+        isPartOf: { '@id': 'https://xyqon.web.app/#website' },
+        about: { '@id': 'https://xyqon.web.app/#software' }
+      }
+    ];
+
+    if (page === 'run-a-node') {
+      graph.push({
+        '@type': 'HowTo',
+        '@id': 'https://xyqon.web.app/run-a-node#howto',
+        name: 'How to run a XYQON node on Linux',
+        description: seo.description,
+        totalTime: 'PT15M',
+        supply: [
+          { '@type': 'HowToSupply', name: 'Linux server with a stable public IPv4 address' },
+          { '@type': 'HowToSupply', name: 'Official signed XYQON 0.2.0 binary' }
+        ],
+        step: [
+          { '@type': 'HowToStep', position: 1, name: 'Install the verified binary', url: `${canonicalUrl}#install` },
+          { '@type': 'HowToStep', position: 2, name: 'Prepare node storage', url: `${canonicalUrl}#storage` },
+          { '@type': 'HowToStep', position: 3, name: 'Add trusted seed peers', url: `${canonicalUrl}#peers` },
+          { '@type': 'HowToStep', position: 4, name: 'Open TCP port 7101', url: `${canonicalUrl}#firewall` },
+          { '@type': 'HowToStep', position: 5, name: 'Start the relay node', url: `${canonicalUrl}#start` },
+          { '@type': 'HowToStep', position: 6, name: 'Verify synchronization', url: `${canonicalUrl}#verify` }
+        ]
+      });
+    }
+
+    return { '@context': 'https://schema.org', '@graph': graph };
+  }
+
   private routeFromPath() {
     const path = window.location.pathname.replace(/^\/+/, '').split('/')[0];
+    if (path === 'run-a-node') {
+      return path;
+    }
     if (path === 'dashboard' || path === 'explorer' || path === 'community' || path === 'developers' || path === 'clothing') {
       return path;
     }
