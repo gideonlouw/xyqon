@@ -29,7 +29,7 @@ npm update -g xyqon
 Or install this exact release:
 
 ```bash
-npm install -g xyqon@0.5.0
+npm install -g xyqon@0.6.0
 ```
 
 Or run without installing:
@@ -41,7 +41,7 @@ npx xyqon help
 Run this exact release without installing:
 
 ```bash
-npx xyqon@0.5.0 help
+npx xyqon@0.6.0 help
 ```
 
 ## Create A Wallet

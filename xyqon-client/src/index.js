@@ -326,7 +326,16 @@ export function createNftTransferTransaction(wallet, { recipient, collection, to
 }
 
 export function transactionId(transaction) {
-  return createHash('sha256').update(JSON.stringify(transaction)).digest('hex');
+  // Rust's serde_json preserves the f64 type by serializing whole-valued floats with `.0`.
+  // JSON.stringify(100000000) omits that suffix, which previously made the client compare a
+  // different id from the node for integer amounts and coin supplies.
+  const fee = Number(transaction.fee ?? 0);
+  const feeField = Math.abs(fee) > XYQON_EPSILON ? `,"fee":${rustJsonNumber(fee)}` : '';
+  const assetField = transaction.asset_operation
+    ? `,"asset_operation":${stringifyAssetOperationForSigning(transaction.asset_operation)}`
+    : '';
+  const canonical = `{"sender":${jsonString(transaction.sender)},"recipient":${jsonString(transaction.recipient)},"amount":${rustJsonNumber(transaction.amount)}${feeField},"sender_public_key":${jsonString(transaction.sender_public_key)},"signature":${jsonString(transaction.signature)}${assetField}}`;
+  return createHash('sha256').update(canonical).digest('hex');
 }
 
 export function requestMessage(peer, message, responseKey, timeoutMs = 5000) {

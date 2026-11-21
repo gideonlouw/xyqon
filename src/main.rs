@@ -1250,7 +1250,12 @@ impl Blockchain {
             return Err("candidate chain is invalid".to_string());
         }
 
-        if candidate.chain_score() <= self.chain_score() {
+        // Prefer more work, then the lower tip hash so equal-work forks converge.
+        let preference = candidate
+            .chain_score()
+            .cmp(&self.chain_score())
+            .then_with(|| self.latest_block().hash.cmp(&candidate.latest_block().hash));
+        if !preference.is_gt() {
             return Ok(false);
         }
 
@@ -2858,6 +2863,7 @@ fn run_node(config: NodeConfig) -> Result<(), String> {
         loop {
             thread::sleep(Duration::from_secs(60));
             node.ensure_supported_version()?;
+            node.sync_chain_from_peers();
         }
     }
 
@@ -4517,6 +4523,41 @@ mod tests {
         assert!(blockchain
             .add_block(vec![update], miner_public_key)
             .is_err());
+    }
+
+    #[test]
+    fn equal_work_forks_converge_on_lower_tip_hash() {
+        let miner_key = SigningKey::from_bytes(&[8; 32]);
+        let miner_public_key = bytes_to_hex(miner_key.verifying_key().as_bytes());
+        let mine_branch = |symbol: &str| {
+            let mut chain = blockchain_with_genesis();
+            let transaction = Transaction::create_coin(
+                "miner",
+                symbol.to_string(),
+                "Test Coin".to_string(),
+                1.0,
+                &miner_key,
+            )
+            .unwrap();
+            chain
+                .add_block(vec![transaction], miner_public_key.clone())
+                .unwrap();
+            chain
+        };
+        let a = mine_branch("TESTA");
+        let b = mine_branch("TESTB");
+        assert_eq!(a.chain_score(), b.chain_score());
+        assert_ne!(a.latest_block().hash, b.latest_block().hash);
+        let (mut preferred, mut other) = if a.latest_block().hash < b.latest_block().hash {
+            (a, b)
+        } else {
+            (b, a)
+        };
+
+        assert!(!preferred.replace_with_better_chain(other.clone()).unwrap());
+        assert!(other.replace_with_better_chain(preferred.clone()).unwrap());
+        assert_eq!(preferred.latest_block().hash, other.latest_block().hash);
+        assert!(!other.replace_with_better_chain(preferred).unwrap());
     }
 
     #[test]
