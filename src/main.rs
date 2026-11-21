@@ -35,9 +35,10 @@ const PEER_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const EMPTY_REWARD_BLOCK_REJECTION_START_TIMESTAMP: i64 = 1_780_732_800; // 2026-06-06T08:00:00Z
 const TRANSACTION_FEE_START_TIMESTAMP: i64 = 1_780_747_200; // 2026-06-06T12:00:00Z
 const PUBLIC_MINER_REWARD_START_TIMESTAMP: i64 = 1_780_747_200; // 2026-06-06T12:00:00Z
+const PERMISSIONLESS_MINING_HEIGHT: u64 = 270;
 const DEFAULT_XYQON_TRANSACTION_FEE: f64 = 0.001;
 const SOFTWARE_VERSION: &str = env!("CARGO_PKG_VERSION");
-const PROTOCOL_VERSION: u32 = 2;
+const PROTOCOL_VERSION: u32 = 3;
 const UPGRADE_QUORUM: usize = 2;
 const TRUSTED_PUBLIC_MINER_REWARD_WALLETS: [(&str, &str); 3] = [
     (
@@ -881,12 +882,12 @@ impl Block {
         self.timestamp >= EMPTY_REWARD_BLOCK_REJECTION_START_TIMESTAMP
     }
 
-    fn requires_public_miner(&self) -> bool {
-        self.timestamp >= PUBLIC_MINER_REWARD_START_TIMESTAMP
+    fn requires_trusted_miner(&self) -> bool {
+        requires_trusted_miner(self.index, self.timestamp)
     }
 
     fn has_known_public_miner(&self, known_miner_peers: &HashSet<String>) -> bool {
-        if !self.requires_public_miner() {
+        if !self.requires_trusted_miner() {
             return true;
         }
 
@@ -898,7 +899,7 @@ impl Block {
     }
 
     fn has_expected_public_miner_reward(&self, trusted_miners: &TrustedMinerRegistry) -> bool {
-        if !self.requires_public_miner() {
+        if !self.requires_trusted_miner() {
             return true;
         }
 
@@ -1640,7 +1641,7 @@ impl Node {
         }
     }
 
-    fn ensure_supported_version(&self) -> Result<(), String> {
+    fn warn_about_newer_protocol(&self) {
         let trusted_peers = self.trusted_miners.known_peers();
         let reports: Vec<(String, NodeVersionInfo)> = self
             .peers
@@ -1663,15 +1664,13 @@ impl Node {
                 .iter()
                 .max_by_key(|(_, info)| info.protocol_version)
                 .expect("newer reports cannot be empty");
-            return Err(format!(
-                "UPGRADE REQUIRED: XYQON {SOFTWARE_VERSION} uses protocol {PROTOCOL_VERSION}, but {count} peers report protocol {remote_protocol} (software {remote_version}). Transaction and block validation has stopped. Install the latest XYQON source and restart.",
+            eprintln!(
+                "Upgrade notice: XYQON {SOFTWARE_VERSION} uses protocol {PROTOCOL_VERSION}, but {count} peers report protocol {remote_protocol} (software {remote_version}). Check the published release notes before upgrading.",
                 count = newer.len(),
                 remote_protocol = latest.1.protocol_version,
                 remote_version = latest.1.software_version,
-            ));
+            );
         }
-
-        Ok(())
     }
 
     fn print_chain(&self) {
@@ -2848,7 +2847,7 @@ fn run_node(config: NodeConfig) -> Result<(), String> {
     let has_listener = listen_addr.is_some();
     let should_stay_alive = has_listener || !config.peers.is_empty() || config.peers_file.is_some();
     let node = Node::new(config)?;
-    node.ensure_supported_version()?;
+    node.warn_about_newer_protocol();
 
     if let Some(listen_addr) = listen_addr {
         node.start_listener(listen_addr);
@@ -2862,7 +2861,7 @@ fn run_node(config: NodeConfig) -> Result<(), String> {
     if should_stay_alive {
         loop {
             thread::sleep(Duration::from_secs(60));
-            node.ensure_supported_version()?;
+            node.warn_about_newer_protocol();
             node.sync_chain_from_peers();
         }
     }
@@ -2882,7 +2881,7 @@ fn submit_transaction(config: SubmitConfig) -> Result<(), String> {
         mempool_path: config.mempool_path,
         advertised_addr: None,
     })?;
-    node.ensure_supported_version()?;
+    node.warn_about_newer_protocol();
 
     node.sync_chain_from_peers();
     node.submit_transaction(Transaction::new_with_fee(
@@ -3040,7 +3039,7 @@ fn run_miner(config: MineConfig) -> Result<(), String> {
         mempool_path: config.mempool_path,
         advertised_addr: config.advertised_addr,
     })?;
-    node.ensure_supported_version()?;
+    node.warn_about_newer_protocol();
 
     if let Some(listen_addr) = listen_addr {
         node.start_listener(listen_addr);
@@ -3053,7 +3052,7 @@ fn run_miner(config: MineConfig) -> Result<(), String> {
 
     loop {
         if last_version_check.elapsed() >= Duration::from_secs(60) {
-            node.ensure_supported_version()?;
+            node.warn_about_newer_protocol();
             last_version_check = Instant::now();
         }
         node.sync_chain_from_peers();
@@ -3705,20 +3704,25 @@ fn build_candidate_block(
 
     let prev = blockchain.latest_block();
     let timestamp = Utc::now().timestamp();
-    if timestamp >= PUBLIC_MINER_REWARD_START_TIMESTAMP && miner_peer.is_none() {
+    let next_height = prev.index + 1;
+    if requires_trusted_miner(next_height, timestamp) && miner_peer.is_none() {
         return Err(
-            "mining after public miner activation requires --advertise <IP:PORT>".to_string(),
+            "mining before permissionless activation requires --advertise <IP:PORT>".to_string(),
         );
     }
     let difficulty = expected_difficulty_for_next_block(&blockchain.chain, timestamp);
     Ok(Block::new(
-        prev.index + 1,
+        next_height,
         timestamp,
         difficulty,
         transactions,
         prev.hash.clone(),
         miner_peer,
     ))
+}
+
+fn requires_trusted_miner(height: u64, timestamp: i64) -> bool {
+    height < PERMISSIONLESS_MINING_HEIGHT && timestamp >= PUBLIC_MINER_REWARD_START_TIMESTAMP
 }
 
 fn mining_reward_for_block(block_index: u64) -> f64 {
@@ -4523,6 +4527,26 @@ mod tests {
         assert!(blockchain
             .add_block(vec![update], miner_public_key)
             .is_err());
+    }
+
+    #[test]
+    fn mining_allowlist_ends_at_activation_height() {
+        let mut block = blockchain_with_genesis().latest_block().clone();
+        block.timestamp = PUBLIC_MINER_REWARD_START_TIMESTAMP;
+        block.index = PERMISSIONLESS_MINING_HEIGHT - 1;
+        let peers = HashSet::new();
+        let registry = TrustedMinerRegistry::load(None).unwrap();
+
+        assert!(!block.has_known_public_miner(&peers));
+        assert!(!block.has_expected_public_miner_reward(&registry));
+
+        block.index = PERMISSIONLESS_MINING_HEIGHT;
+        assert!(block.has_known_public_miner(&peers));
+        assert!(block.has_expected_public_miner_reward(&registry));
+
+        block.miner_peer = Some("192.0.2.1:7101".to_string());
+        assert!(block.has_known_public_miner(&peers));
+        assert!(block.has_expected_public_miner_reward(&registry));
     }
 
     #[test]

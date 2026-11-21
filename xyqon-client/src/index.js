@@ -517,7 +517,8 @@ export async function getBestChain(seedPeers = DEFAULT_PEERS) {
     throw new Error('no reachable XYQON nodes returned a chain');
   }
 
-  online.sort((left, right) => chainScore(right.chain) - chainScore(left.chain));
+  online.sort((left, right) => chainScore(right.chain) - chainScore(left.chain)
+    || left.chain.chain.at(-1).hash.localeCompare(right.chain.chain.at(-1).hash));
   return {
     sourcePeer: online[0].peer,
     peers,

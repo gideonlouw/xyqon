@@ -188,22 +188,24 @@ xyqon wallet export --wallet /var/lib/xyqon/miner.wallet.json
 
 Keep wallet files private.
 
-## 11. Add A Trusted Miner
+## 11. Upgrade To Permissionless Mining
 
-After the new server has joined as a normal node and synced, run this on an existing trusted server:
+Upgrade every existing service to 0.3.0 before block 270. Stop the old services
+before starting upgraded peers, back up the chain and configuration, replace the
+binary used by systemd, and verify the new version and matching chain tips after
+restart. Keep the historical miner registry for validating old blocks.
+Once height 269 is synced, a fresh wallet can mine the next block without
+registration. See the repository README for an outbound-only mining command.
 
-```bash
-xyqon miner add-trusted \
-  --trusted-miners-file /etc/xyqon/trusted-miners.json \
-  --approver-wallet /var/lib/xyqon/miner.wallet.json \
-  --peers-file /etc/xyqon/peers.txt \
-  --peer NEW_NODE_PUBLIC_IP:7101 \
-  --wallet NEW_MINER_PUBLIC_WALLET
-```
-
-The approving server signs the new mapping and broadcasts it to known peers. Running nodes accept and save it only if it was signed by a current trusted miner wallet. The command refuses to change the reward wallet for a peer that is already trusted.
-
-Each server writes `/etc/xyqon/trusted-miners.json.lock` after accepting the trusted file. If someone later changes a previously accepted miner wallet or removes a trusted miner from the JSON file, that server rejects the file on startup.
+Before activation, rehearse on isolated hosts seeded with a copy of the chain
+at height 269 and using separate peer lists, wallets, and data directories. Do
+not connect the rehearsal nodes to public peers or use production private keys.
+Have an independent operator sync to height 269, submit a valid test transaction
+from an operator-controlled wallet funded in the snapshot, and
+mine block 270 with a fresh reward wallet and no miner registration. Verify
+that the other nodes accept the same tip and that a fresh relay can sync it
+from genesis. Publish the release, activation height, and independently mined
+block hash when the corresponding public checks succeed.
 
 ## 12. Run A Miner
 

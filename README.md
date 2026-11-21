@@ -47,18 +47,18 @@ Download them from [GitHub Releases](https://github.com/gideonlouw/xyqon/release
 Check the downloaded checksum:
 
 ```bash
-sha256sum --check xyqon-v0.2.0-linux-x86_64.sha256
+sha256sum --check xyqon-v0.3.0-linux-x86_64.sha256
 ```
 
 Verify the keyless GitHub Actions signature with Cosign:
 
 ```bash
 cosign verify-blob \
-  --certificate xyqon-v0.2.0-linux-x86_64.pem \
-  --signature xyqon-v0.2.0-linux-x86_64.sig \
+  --certificate xyqon-v0.3.0-linux-x86_64.pem \
+  --signature xyqon-v0.3.0-linux-x86_64.sig \
   --certificate-identity-regexp '^https://github.com/gideonlouw/xyqon/.github/workflows/release.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  xyqon-v0.2.0-linux-x86_64
+  xyqon-v0.3.0-linux-x86_64
 ```
 
 For Linux server deployment, firewall setup, systemd setup, and joining instructions, see:
@@ -86,13 +86,15 @@ Show the installed node and network protocol versions:
 xyqon version
 ```
 
-Version `0.2.0` introduces protocol version `2`. Running nodes query trusted miner peers every
-60 seconds. If at least two trusted peers report a higher protocol version, the outdated process
-exits with an `UPGRADE REQUIRED` message and stops accepting transactions, blocks, or mining until
-the operator installs the newer binary and restarts it. A single peer cannot trigger this gate.
+Version 0.3.0 reports protocol 3 and activates permissionless mining at block **270**.
+Blocks below 270 still use the historical miner rules. From block 270, miners can
+use their own reward wallet without registration or a public listening address.
+Proof of work, transaction validation, and reward limits still apply.
 
-This mechanism protects upgrades after `0.2.0`; binaries older than `0.2.0` do not understand the
-version request and must be upgraded manually during this rollout.
+Upgrade all nodes and miners before block 270. Stop the existing 0.2.0 services
+before bringing the upgraded peers online: old builds can stop validation after
+seeing two trusted peers report a higher protocol. Version 0.3.0 only logs an
+upgrade notice. Keep the current chain, wallet, peer, and historical miner files.
 
 ## Peer List
 
@@ -127,9 +129,10 @@ This means a new node joins by:
 
 Do not add public DNS servers, test IPs, or unrelated hosts such as `1.1.1.1:7101` or `8.8.8.8:7101` to `peers.txt`. A peer should be a reachable XYQON node listening on TCP port `7101`.
 
-Peer discovery and mining rewards are separate trust decisions. A discovered node can relay chain and transaction data, but new public miners should be added deliberately. Before allowing a new public server to mine rewards, approve its `IP:PORT` and reward wallet with a current trusted miner wallet so the signed approval can broadcast through the peer network.
-
-Use `deploy/trusted-miners.example.json` as the starting `/etc/xyqon/trusted-miners.json` file for public nodes.
+The addresses above are bootstrap peers. You can use any reachable XYQON node
+as a seed or share your own independently operated seed. Preserve historical
+miner mappings in `deploy/trusted-miners.example.json` and any additional
+mappings required to validate blocks before height 270.
 
 ## Create A Wallet
 
@@ -211,35 +214,18 @@ On startup, the joining node requests chains from known peers and adopts a valid
 
 Use this flow for a new relay node first. After it is reachable and visible to the existing network, decide separately whether it should become a public miner.
 
-## Add A Public Miner
+## Mine Without Registration
 
-Use `mine` only on servers that should compete for block rewards. Public miner membership is intentionally stricter than peer discovery so invalid announced peers cannot claim mining rewards.
-
-To add a new public miner:
-
-1. Run it as a normal public node first and confirm it responds on `NEW_NODE_PUBLIC_IP:7101`.
-2. Confirm its `peers.txt` contains only real XYQON peers.
-3. Confirm it has synced to the current valid chain.
-4. Ask the operator for the public key that should receive mining rewards.
-5. On an existing trusted server, validate and append the miner:
+Once the chain reaches block 269, the next block is open to any miner running
+0.3.0 or later. Create a wallet, point the miner at reachable peers, and run:
 
 ```bash
-xyqon miner add-trusted \
-  --trusted-miners-file /etc/xyqon/trusted-miners.json \
-  --approver-wallet /var/lib/xyqon/miner.wallet.json \
-  --peers-file /etc/xyqon/peers.txt \
-  --peer NEW_NODE_PUBLIC_IP:7101 \
-  --wallet NEW_MINER_PUBLIC_WALLET
+xyqon mine --peers-file /etc/xyqon/peers.txt --wallet miner.wallet.json
 ```
 
-6. The approving node signs the new mapping and broadcasts it to known peers. Running nodes accept and save it only if it was signed by a current trusted miner wallet.
-7. Start the new server with `xyqon mine --advertise NEW_NODE_PUBLIC_IP:7101 --trusted-miners-file /etc/xyqon/trusted-miners.json`.
-
-If a miner reward block advertises an unknown or invalid `miner_peer`, other nodes should reject that chain instead of syncing to it.
-
-The trusted miner file is append-only by default. If an existing peer is already assigned to a reward wallet, `miner add-trusted` refuses to replace that wallet. This protects existing miners from someone changing their payment address in the shared file.
-
-Each server also writes a local `/etc/xyqon/trusted-miners.json.lock` snapshot after loading the trusted file. On later starts, the node rejects the trusted file if a previously accepted peer is missing or has a different reward wallet.
+For incoming peer connections, add a listener and advertise a reachable address.
+Use a chain path and wallet path appropriate to your installation. Keep the
+historical trusted miner file if your network uses additional historical mappings.
 
 ## Submit A Transaction
 
@@ -381,7 +367,7 @@ When a node receives a block, it checks:
 - The total coin supply does not exceed 67,000,000 XYQON
 - Every normal transaction signature is valid
 - Every normal transaction has enough confirmed balance to spend
-- Public miner reward blocks identify a known public miner peer
+- Historical miner rewards follow the allowlist rules before height 270
 
 If the block is accepted, the node appends it to its local chain, saves it, removes confirmed transactions from the mempool, and shares the block with known peers.
 

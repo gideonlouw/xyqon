@@ -15,6 +15,7 @@ const genesisTimestamp = 1_700_000_000;
 const emptyRewardBlockRejectionStartTimestamp = 1_780_732_800;
 const transactionFeeStartTimestamp = 1_780_747_200;
 const publicMinerRewardStartTimestamp = 1_780_747_200;
+const permissionlessMiningHeight = 270;
 const defaultTransactionFee = 0.001;
 const initialMiningReward = 10;
 const halvingInterval = 100_000;
@@ -139,12 +140,16 @@ async function requestPeers(peer, timeoutMs = 2500) {
 }
 
 function chainHasOnlyKnownMinerPeers(chain, knownMinerPeers) {
-  return chain.chain.every((block) => !block.miner_peer || knownMinerPeers.has(normalizePeer(block.miner_peer)));
+  return chain.chain.every((block) => {
+    if (block.index >= permissionlessMiningHeight || !block.miner_peer) return true;
+    const peer = normalizePeer(block.miner_peer);
+    return knownMinerPeers.has(peer) || trustedMinerRewardWallets.has(peer);
+  });
 }
 
 function chainHasExpectedMinerRewards(chain) {
   return chain.chain.every((block) => {
-    if (!block.miner_peer || block.timestamp < publicMinerRewardStartTimestamp) {
+    if (block.index >= permissionlessMiningHeight || block.timestamp < publicMinerRewardStartTimestamp) {
       return true;
     }
 
@@ -530,7 +535,8 @@ async function getNetworkSnapshot() {
 
   const best = results
     .filter((result) => result.chainValid)
-    .sort((a, b) => chainScore(b.chain) - chainScore(a.chain))[0];
+    .sort((a, b) => chainScore(b.chain) - chainScore(a.chain)
+      || a.chain.chain.at(-1).hash.localeCompare(b.chain.chain.at(-1).hash))[0];
 
   const activeTipHash = best?.chain?.chain.at(-1)?.hash ?? null;
   const nodes = results.map((result) => {
