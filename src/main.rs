@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -33,12 +33,15 @@ const DEFAULT_PEER_PORT: u16 = 7101;
 const PEER_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const PEER_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const EMPTY_REWARD_BLOCK_REJECTION_START_TIMESTAMP: i64 = 1_780_732_800; // 2026-06-06T08:00:00Z
+const CONTINUOUS_MINING_START_TIMESTAMP: i64 = 1_795_564_800; // 2026-11-25T00:00:00Z
 const TRANSACTION_FEE_START_TIMESTAMP: i64 = 1_780_747_200; // 2026-06-06T12:00:00Z
 const PUBLIC_MINER_REWARD_START_TIMESTAMP: i64 = 1_780_747_200; // 2026-06-06T12:00:00Z
 const PERMISSIONLESS_MINING_HEIGHT: u64 = 270;
 const DEFAULT_XYQON_TRANSACTION_FEE: f64 = 0.001;
 const SOFTWARE_VERSION: &str = env!("CARGO_PKG_VERSION");
-const PROTOCOL_VERSION: u32 = 3;
+const BLOCK_SYNC_PROTOCOL_VERSION: u32 = 5;
+const PROTOCOL_VERSION: u32 = BLOCK_SYNC_PROTOCOL_VERSION;
+const BLOCK_SYNC_BATCH_SIZE: usize = 128;
 const UPGRADE_QUORUM: usize = 2;
 const TRUSTED_PUBLIC_MINER_REWARD_WALLETS: [(&str, &str); 3] = [
     (
@@ -792,6 +795,7 @@ struct Block {
 }
 
 impl Block {
+    #[cfg(test)]
     fn new(
         index: u64,
         timestamp: i64,
@@ -800,7 +804,27 @@ impl Block {
         previous_hash: String,
         miner_peer: Option<String>,
     ) -> Self {
-        let mut block = Block {
+        let mut block = Self::candidate(
+            index,
+            timestamp,
+            difficulty,
+            transactions,
+            previous_hash,
+            miner_peer,
+        );
+        block.mine_block(difficulty);
+        block
+    }
+
+    fn candidate(
+        index: u64,
+        timestamp: i64,
+        difficulty: usize,
+        transactions: Vec<Transaction>,
+        previous_hash: String,
+        miner_peer: Option<String>,
+    ) -> Self {
+        Self {
             index,
             timestamp,
             difficulty,
@@ -809,10 +833,7 @@ impl Block {
             miner_peer,
             hash: String::new(),
             nonce: 0,
-        };
-
-        block.mine_block(difficulty);
-        block
+        }
     }
 
     fn calculate_hash(&self) -> String {
@@ -848,7 +869,13 @@ impl Block {
         println!("Block mined: {}", self.hash);
     }
 
-    fn is_valid(&self, expected_difficulty: usize, expected_reward: f64) -> bool {
+    fn is_valid(&self, expected_difficulty: usize, expected_reward: f64, now: i64) -> bool {
+        if self.timestamp >= CONTINUOUS_MINING_START_TIMESTAMP
+            && self.normal_transactions().is_empty()
+            && (now < CONTINUOUS_MINING_START_TIMESTAMP || self.timestamp > now.saturating_add(120))
+        {
+            return false;
+        }
         self.hash == self.calculate_hash()
             && self.difficulty == expected_difficulty
             && self.hash.starts_with(&"0".repeat(expected_difficulty))
@@ -879,7 +906,7 @@ impl Block {
     }
 
     fn requires_normal_transaction(&self) -> bool {
-        self.timestamp >= EMPTY_REWARD_BLOCK_REJECTION_START_TIMESTAMP
+        requires_normal_transaction(self.timestamp)
     }
 
     fn requires_trusted_miner(&self) -> bool {
@@ -1015,6 +1042,13 @@ struct Blockchain {
     circulating_supply: f64,
 }
 
+#[derive(Serialize, Deserialize)]
+struct ChainUpdate {
+    start: usize,
+    parent_hash: String,
+    blocks: Vec<Block>,
+}
+
 impl Blockchain {
     fn load(path: &str) -> Result<Self, String> {
         if !Path::new(path).exists() {
@@ -1027,9 +1061,10 @@ impl Blockchain {
             fs::read_to_string(path).map_err(|error| format!("failed to read chain: {error}"))?;
         let mut blockchain: Blockchain = serde_json::from_str(&contents)
             .map_err(|error| format!("failed to parse chain: {error}"))?;
+        load_chain_updates(&mut blockchain, path)?;
         blockchain.recalculate_circulating_supply();
 
-        if !blockchain.is_valid() {
+        if blockchain.chain.is_empty() || !blockchain.is_valid() {
             return Err(format!("stored chain is invalid: {path}"));
         }
 
@@ -1038,6 +1073,37 @@ impl Blockchain {
 
     fn latest_block(&self) -> &Block {
         self.chain.last().unwrap()
+    }
+
+    fn block_locator(&self) -> Vec<(usize, String)> {
+        let mut position = self.chain.len() - 1;
+        let mut step = 1_usize;
+        let mut locator = Vec::new();
+        loop {
+            locator.push((position, self.chain[position].hash.clone()));
+            if position == 0 {
+                return locator;
+            }
+            position = position.saturating_sub(step);
+            if locator.len() >= 10 {
+                step = step.saturating_mul(2);
+            }
+        }
+    }
+
+    fn missing_blocks(&self, locator: &[(usize, String)]) -> Option<BlockBatch> {
+        let anchor = locator.iter().take(128).find_map(|(position, hash)| {
+            self.chain
+                .get(*position)
+                .filter(|block| block.hash == *hash)
+                .map(|_| *position)
+        })?;
+        let end = (anchor + 1 + BLOCK_SYNC_BATCH_SIZE).min(self.chain.len());
+        Some(BlockBatch {
+            anchor,
+            blocks: self.chain[anchor + 1..end].to_vec(),
+            more: end < self.chain.len(),
+        })
     }
 
     #[cfg(test)]
@@ -1110,7 +1176,7 @@ impl Blockchain {
             );
         }
 
-        if !block.is_valid(expected_difficulty, expected_reward) {
+        if !block.is_valid(expected_difficulty, expected_reward, Utc::now().timestamp()) {
             return Err(format!(
                 "received block failed validation; expected difficulty {expected_difficulty} and reward {expected_reward}"
             ));
@@ -1149,6 +1215,7 @@ impl Blockchain {
     }
 
     fn is_valid(&self) -> bool {
+        let now = Utc::now().timestamp();
         let mut total_supply = 0.0;
         let mut balances = WalletBalances::new();
         let mut assets = AssetLedger::new();
@@ -1162,7 +1229,7 @@ impl Blockchain {
             let subsidy = allowed_mining_reward_for_block(current.index, total_supply);
             let expected_reward = subsidy + current.total_transaction_fees();
 
-            if !current.is_valid(expected_difficulty, expected_reward) {
+            if !current.is_valid(expected_difficulty, expected_reward, now) {
                 return false;
             }
 
@@ -1221,6 +1288,9 @@ impl Blockchain {
     }
 
     fn validate_spending(&self, transactions: &[Transaction]) -> Result<(), String> {
+        if transactions.is_empty() {
+            return Ok(());
+        }
         let mut balances = WalletBalances::from_chain(&self.chain);
         let mut assets = AssetLedger::from_chain(&self.chain)?;
         let mut seen_transaction_ids = self.confirmed_transaction_ids();
@@ -1246,23 +1316,28 @@ impl Blockchain {
             .collect()
     }
 
+    #[cfg(test)]
     fn replace_with_better_chain(&mut self, candidate: Blockchain) -> Result<bool, String> {
         if !candidate.is_valid() {
             return Err("candidate chain is invalid".to_string());
         }
 
         // Prefer more work, then the lower tip hash so equal-work forks converge.
-        let preference = candidate
-            .chain_score()
-            .cmp(&self.chain_score())
-            .then_with(|| self.latest_block().hash.cmp(&candidate.latest_block().hash));
-        if !preference.is_gt() {
+        if !self.prefers(&candidate) {
             return Ok(false);
         }
 
         *self = candidate;
         self.recalculate_circulating_supply();
         Ok(true)
+    }
+
+    fn prefers(&self, candidate: &Blockchain) -> bool {
+        candidate
+            .chain_score()
+            .cmp(&self.chain_score())
+            .then_with(|| self.latest_block().hash.cmp(&candidate.latest_block().hash))
+            .is_gt()
     }
 
     fn has_only_known_public_miners(
@@ -1293,12 +1368,21 @@ enum NetworkMessage {
     TrustedMinerAnnouncement(TrustedMinerAnnouncement),
     RequestChain,
     ChainResponse(Blockchain),
+    RequestBlocks(Vec<(usize, String)>),
+    BlocksResponse(Option<BlockBatch>),
     RequestPeers,
     PeerResponse(Vec<String>),
     RequestTransaction(String),
     TransactionResponse(TransactionStatus),
     RequestNodeVersion,
     NodeVersion(NodeVersionInfo),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct BlockBatch {
+    anchor: usize,
+    blocks: Vec<Block>,
+    more: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -1513,11 +1597,11 @@ impl Node {
             mempool.clone()
         };
 
-        if transactions.is_empty() {
-            return Ok(false);
-        }
-
-        let block = {
+        let mut block = {
+            let timestamp = Utc::now().timestamp();
+            if transactions.is_empty() && requires_normal_transaction(timestamp) {
+                return Ok(false);
+            }
             let blockchain = self
                 .blockchain
                 .lock()
@@ -1531,8 +1615,10 @@ impl Node {
                 transactions,
                 miner_reward_recipient,
                 miner_peer,
+                timestamp,
             )?
         };
+        block.mine_block(block.difficulty);
 
         let accepted = {
             let mut blockchain = self
@@ -1540,12 +1626,13 @@ impl Node {
                 .lock()
                 .map_err(|_| "blockchain lock was poisoned".to_string())?;
             let known_miner_peers = self.peers.known_public_miner_peers(&self.trusted_miners);
-            blockchain.add_received_block_with_known_miners(
+            accept_and_save_block(
+                &mut blockchain,
                 block.clone(),
                 &known_miner_peers,
                 &self.trusted_miners,
+                &self.chain_path,
             )?;
-            save_blockchain(&blockchain, &self.chain_path)?;
             true
         };
 
@@ -1559,13 +1646,6 @@ impl Node {
         }
 
         Ok(true)
-    }
-
-    fn pending_transaction_count(&self) -> usize {
-        self.mempool
-            .lock()
-            .map(|mempool| mempool.len())
-            .unwrap_or(0)
     }
 
     fn broadcast_block(&self, block: &Block) {
@@ -1586,8 +1666,8 @@ impl Node {
 
     fn sync_chain_from_peers(&self) {
         for peer in self.peers.snapshot() {
-            match request_chain_from_peer(&peer) {
-                Ok(candidate) => {
+            match self.request_peer_update(&peer) {
+                Ok(Some(candidate)) => {
                     let known_miner_peers =
                         self.peers.known_public_miner_peers(&self.trusted_miners);
                     let result = self
@@ -1604,11 +1684,21 @@ impl Node {
                                         .to_string(),
                                 );
                             }
-                            let replaced = blockchain.replace_with_better_chain(candidate)?;
-                            if replaced {
-                                save_blockchain(&blockchain, &self.chain_path)?;
+                            if !blockchain.prefers(&candidate) {
+                                return Ok(false);
                             }
-                            Ok(replaced)
+                            let start = blockchain
+                                .chain
+                                .iter()
+                                .zip(&candidate.chain)
+                                .take_while(|(local, remote)| local.hash == remote.hash)
+                                .count();
+                            if start == 0 {
+                                return Err("peer chain has a different genesis block".to_string());
+                            }
+                            save_chain_update(&candidate, start, &self.chain_path)?;
+                            *blockchain = candidate;
+                            Ok(true)
                         });
 
                     match result {
@@ -1636,8 +1726,70 @@ impl Node {
                         Err(error) => eprintln!("Could not sync chain from {peer}: {error}"),
                     }
                 }
+                Ok(None) => {}
                 Err(error) => eprintln!("Could not request chain from {peer}: {error}"),
             }
+        }
+    }
+
+    fn request_peer_update(&self, peer: &str) -> Result<Option<Blockchain>, String> {
+        let version = request_node_version_from_peer(peer)?;
+        if version.protocol_version < BLOCK_SYNC_PROTOCOL_VERSION {
+            return request_chain_from_peer(peer).map(Some);
+        }
+
+        let locator = self
+            .blockchain
+            .lock()
+            .map_err(|_| "blockchain lock was poisoned".to_string())?
+            .block_locator();
+        let batch = request_block_batch(peer, &locator)?;
+        if batch.blocks.is_empty() {
+            return Ok(None);
+        }
+
+        let mut candidate = {
+            let blockchain = self
+                .blockchain
+                .lock()
+                .map_err(|_| "blockchain lock was poisoned".to_string())?;
+            let anchor_hash = locator
+                .iter()
+                .find(|(position, _)| *position == batch.anchor)
+                .map(|(_, hash)| hash);
+            if blockchain.chain.get(batch.anchor).map(|block| &block.hash) != anchor_hash
+                || anchor_hash.is_none()
+            {
+                return Err("local chain changed during block sync".to_string());
+            }
+            Blockchain {
+                chain: blockchain.chain[..=batch.anchor].to_vec(),
+                circulating_supply: 0.0,
+            }
+        };
+        let mut batch = batch;
+        loop {
+            for block in batch.blocks {
+                let previous = candidate.latest_block();
+                if previous.index.checked_add(1) != Some(block.index)
+                    || block.previous_hash != previous.hash
+                {
+                    return Err(
+                        "peer block batch does not extend its advertised ancestor".to_string()
+                    );
+                }
+                candidate.chain.push(block);
+            }
+            if !batch.more {
+                candidate.recalculate_circulating_supply();
+                if !candidate.is_valid() {
+                    return Err("peer returned an invalid block sequence".to_string());
+                }
+                return Ok(Some(candidate));
+            }
+            let position = candidate.chain.len() - 1;
+            batch =
+                request_block_batch(peer, &[(position, candidate.latest_block().hash.clone())])?;
         }
     }
 
@@ -1673,16 +1825,14 @@ impl Node {
         }
     }
 
-    fn print_chain(&self) {
+    fn print_chain_status(&self) {
         let Ok(blockchain) = self.blockchain.lock() else {
             eprintln!("Could not read blockchain");
             return;
         };
 
-        println!("\nBlockchain:");
-        for block in &blockchain.chain {
-            println!("{block:#?}");
-        }
+        let tip = blockchain.latest_block();
+        println!("Chain tip: block {} ({})", tip.index, tip.hash);
         if let Ok(mempool) = self.mempool.lock() {
             println!("\nPending transactions: {}", mempool.len());
         }
@@ -1691,7 +1841,6 @@ impl Node {
             blockchain.current_supply(),
             MAX_COIN_SUPPLY
         );
-        println!("\nIs blockchain valid? {}", blockchain.is_valid());
     }
 }
 
@@ -1730,12 +1879,13 @@ fn handle_peer_stream(
                     .map_err(|_| "blockchain lock was poisoned".to_string())
                     .and_then(|mut blockchain| {
                         let known_miner_peers = peers.known_public_miner_peers(&trusted_miners);
-                        blockchain.add_received_block_with_known_miners(
+                        accept_and_save_block(
+                            &mut blockchain,
                             block,
                             &known_miner_peers,
                             &trusted_miners,
+                            &chain_path,
                         )?;
-                        save_blockchain(&blockchain, &chain_path)?;
                         Ok(())
                     });
 
@@ -1871,6 +2021,21 @@ fn handle_peer_stream(
                     Err(_) => eprintln!("Could not read chain for sync response"),
                 }
             }
+            NetworkMessage::RequestBlocks(locator) => {
+                let response = blockchain
+                    .lock()
+                    .map(|chain| NetworkMessage::BlocksResponse(chain.missing_blocks(&locator)));
+                if let Ok(response) = response {
+                    if let Err(error) = serde_json::to_string(&response)
+                        .map_err(|error| error.to_string())
+                        .and_then(|json| {
+                            writeln!(reader.get_mut(), "{json}").map_err(|error| error.to_string())
+                        })
+                    {
+                        eprintln!("Failed to send blocks: {error}");
+                    }
+                }
+            }
             NetworkMessage::RequestPeers => {
                 let response = NetworkMessage::PeerResponse(peers.snapshot());
                 match serde_json::to_string(&response) {
@@ -1917,7 +2082,7 @@ fn handle_peer_stream(
                     Err(error) => eprintln!("Failed to serialize node version response: {error}"),
                 }
             }
-            NetworkMessage::ChainResponse(_) => {
+            NetworkMessage::ChainResponse(_) | NetworkMessage::BlocksResponse(_) => {
                 eprintln!("Unexpected chain response on listener connection");
             }
             NetworkMessage::PeerResponse(_) => {
@@ -2856,7 +3021,7 @@ fn run_node(config: NodeConfig) -> Result<(), String> {
     node.sync_chain_from_peers();
     node.announce_self();
 
-    node.print_chain();
+    node.print_chain_status();
 
     if should_stay_alive {
         loop {
@@ -3056,15 +3221,13 @@ fn run_miner(config: MineConfig) -> Result<(), String> {
             last_version_check = Instant::now();
         }
         node.sync_chain_from_peers();
-        if node.pending_transaction_count() == 0 {
-            println!("No pending transactions; waiting for work");
-            thread::sleep(Duration::from_secs(config.interval_seconds.max(1)));
-            continue;
-        }
-
         match node.mine_pending_transactions(wallet.public_key.clone()) {
-            Ok(true) => node.print_chain(),
-            Ok(false) => println!("No valid pending transactions; waiting for work"),
+            Ok(true) => node.print_chain_status(),
+            Ok(false) => {
+                println!("No pending transactions; waiting for work");
+                thread::sleep(Duration::from_secs(config.interval_seconds.max(1)));
+                continue;
+            }
             Err(error) => eprintln!("Mining attempt failed: {error}"),
         }
 
@@ -3274,17 +3437,96 @@ fn broadcast_block_to_peers(block: &Block, peers: &PeerBook) {
     send_message_to_peers(&message, peers, "block", &block.index.to_string());
 }
 
-fn save_blockchain(blockchain: &Blockchain, path: &str) -> Result<(), String> {
-    if let Some(parent) = Path::new(path).parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)
-                .map_err(|error| format!("failed to create chain directory: {error}"))?;
-        }
+fn accept_and_save_block(
+    blockchain: &mut Blockchain,
+    block: Block,
+    peers: &HashSet<String>,
+    miners: &TrustedMinerRegistry,
+    path: &str,
+) -> Result<(), String> {
+    let start = blockchain.chain.len();
+    let previous_supply = blockchain.circulating_supply;
+    blockchain.add_received_block_with_known_miners(block, peers, miners)?;
+    if let Err(error) = save_chain_update(blockchain, start, path) {
+        blockchain.chain.truncate(start);
+        blockchain.circulating_supply = previous_supply;
+        return Err(error);
     }
+    Ok(())
+}
 
-    let contents = serde_json::to_string_pretty(blockchain)
-        .map_err(|error| format!("failed to serialize chain: {error}"))?;
-    fs::write(path, contents).map_err(|error| format!("failed to save chain: {error}"))
+fn load_chain_updates(blockchain: &mut Blockchain, path: &str) -> Result<(), String> {
+    let file = match fs::File::open(format!("{path}.blocks.jsonl")) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("failed to open block journal: {error}")),
+    };
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        reader
+            .read_until(b'\n', &mut line)
+            .map_err(|error| format!("failed to read block journal: {error}"))?;
+        if line.last() != Some(&b'\n') {
+            // A crash can leave the final write incomplete.
+            return Ok(());
+        }
+        let update: ChainUpdate = serde_json::from_slice(&line)
+            .map_err(|error| format!("invalid block journal entry: {error}"))?;
+        let parent = update
+            .start
+            .checked_sub(1)
+            .and_then(|position| blockchain.chain.get(position));
+        if parent.map(|block| &block.hash) != Some(&update.parent_hash) {
+            return Err(
+                "block journal does not match the chain snapshot or prior update".to_string(),
+            );
+        }
+        blockchain.chain.truncate(update.start);
+        blockchain.chain.extend(update.blocks);
+    }
+}
+
+fn save_chain_update(blockchain: &Blockchain, start: usize, path: &str) -> Result<(), String> {
+    let update = ChainUpdate {
+        start,
+        parent_hash: blockchain.chain[start - 1].hash.clone(),
+        blocks: blockchain.chain[start..].to_vec(),
+    };
+    let mut entry = serde_json::to_vec(&update)
+        .map_err(|error| format!("failed to serialize block update: {error}"))?;
+    entry.push(b'\n');
+    let append = || -> std::io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(format!("{path}.blocks.jsonl"))?;
+        let end = file.seek(SeekFrom::End(0))?;
+        let mut offset = end;
+        while offset > 0 {
+            file.seek(SeekFrom::Start(offset - 1))?;
+            let mut byte = [0];
+            file.read_exact(&mut byte)?;
+            if byte[0] == b'\n' {
+                break;
+            }
+            offset -= 1;
+        }
+        if offset != end {
+            file.set_len(offset)?;
+        }
+        file.seek(SeekFrom::Start(offset))?;
+        if let Err(error) = file.write_all(&entry).and_then(|()| file.sync_all()) {
+            file.set_len(offset)?;
+            file.sync_all()?;
+            return Err(error);
+        }
+        Ok(())
+    };
+    append().map_err(|error| format!("failed to append block journal: {error}"))
 }
 
 fn load_mempool(path: &str) -> Result<Vec<Transaction>, String> {
@@ -3509,12 +3751,41 @@ fn request_chain_from_peer(peer: &str) -> Result<Blockchain, String> {
     {
         NetworkMessage::ChainResponse(mut blockchain) => {
             blockchain.recalculate_circulating_supply();
-            if !blockchain.is_valid() {
+            if blockchain.chain.is_empty() || !blockchain.is_valid() {
                 return Err("peer returned an invalid chain".to_string());
             }
             Ok(blockchain)
         }
         _ => Err("peer did not return a chain response".to_string()),
+    }
+}
+
+fn request_block_batch(peer: &str, locator: &[(usize, String)]) -> Result<BlockBatch, String> {
+    let mut stream = connect_to_peer(peer)?;
+    let request = serde_json::to_string(&NetworkMessage::RequestBlocks(locator.to_vec()))
+        .map_err(|error| format!("could not serialize blocks request: {error}"))?;
+    writeln!(stream, "{request}").map_err(|error| format!("could not send request: {error}"))?;
+
+    let mut response = String::new();
+    BufReader::new(stream)
+        .read_line(&mut response)
+        .map_err(|error| format!("could not read block batch: {error}"))?;
+    match serde_json::from_str::<NetworkMessage>(&response)
+        .map_err(|error| format!("could not parse block batch: {error}"))?
+    {
+        NetworkMessage::BlocksResponse(Some(batch))
+            if locator
+                .iter()
+                .any(|(position, _)| *position == batch.anchor)
+                && batch.blocks.len() <= BLOCK_SYNC_BATCH_SIZE
+                && (!batch.more || batch.blocks.len() == BLOCK_SYNC_BATCH_SIZE) =>
+        {
+            Ok(batch)
+        }
+        NetworkMessage::BlocksResponse(None) => {
+            Err("peer has no common chain ancestor".to_string())
+        }
+        _ => Err("peer returned an invalid block batch".to_string()),
     }
 }
 
@@ -3674,12 +3945,13 @@ fn build_candidate_block(
     mut transactions: Vec<Transaction>,
     miner_reward_recipient: String,
     miner_peer: Option<String>,
+    timestamp: i64,
 ) -> Result<Block, String> {
     if miner_reward_recipient.is_empty() {
         return Err("miner reward recipient cannot be empty".to_string());
     }
 
-    if transactions.is_empty() {
+    if transactions.is_empty() && requires_normal_transaction(timestamp) {
         return Err("cannot mine an empty reward-only block".to_string());
     }
 
@@ -3703,7 +3975,6 @@ fn build_candidate_block(
     transactions.insert(0, Transaction::coinbase(&miner_reward_recipient, reward));
 
     let prev = blockchain.latest_block();
-    let timestamp = Utc::now().timestamp();
     let next_height = prev.index + 1;
     if requires_trusted_miner(next_height, timestamp) && miner_peer.is_none() {
         return Err(
@@ -3711,7 +3982,7 @@ fn build_candidate_block(
         );
     }
     let difficulty = expected_difficulty_for_next_block(&blockchain.chain, timestamp);
-    Ok(Block::new(
+    Ok(Block::candidate(
         next_height,
         timestamp,
         difficulty,
@@ -3719,6 +3990,11 @@ fn build_candidate_block(
         prev.hash.clone(),
         miner_peer,
     ))
+}
+
+fn requires_normal_transaction(timestamp: i64) -> bool {
+    (EMPTY_REWARD_BLOCK_REJECTION_START_TIMESTAMP..CONTINUOUS_MINING_START_TIMESTAMP)
+        .contains(&timestamp)
 }
 
 fn requires_trusted_miner(height: u64, timestamp: i64) -> bool {
@@ -3886,9 +4162,8 @@ MINING:
   The node command only listens, syncs, validates, and relays.
   The submit command signs and broadcasts transactions without mining.
   The mine command runs a continuous mining loop for wallets that want to compete for rewards.
-  Miners wait for pending transactions and mined blocks must include at least one normal transaction.
-  After public miner activation, miners must advertise a known public IP:PORT before rewards are accepted.
-  Public miner rewards are accepted only when the advertised peer maps to the expected reward wallet in the trusted miners file.
+  Starting 2026-11-25 at 00:00 UTC, miners can mine with or without pending transactions.
+  Historical trusted miner rules still apply to older blocks below height 270.
   Each mined block receives one coinbase reward transaction containing the block reward plus native XYQON fees.
   The initial reward is 10.0 XYQON and halves every 100,000 blocks.
   Difficulty adjusts dynamically to target one block every 30 seconds.
@@ -3945,6 +4220,95 @@ mod tests {
             chain: vec![genesis_block()],
             circulating_supply: 0.0,
         }
+    }
+
+    #[test]
+    fn block_journal_reloads_a_reorg_and_recovers_an_incomplete_tail() {
+        let testing_dir = std::env::temp_dir().join(format!(
+            "xyqon-block-journal-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        fs::create_dir(&testing_dir).unwrap();
+        let snapshot_path = testing_dir.join("chain.json");
+        let path = snapshot_path.to_str().unwrap();
+        let journal = format!("{path}.blocks.jsonl");
+        let genesis = blockchain_with_genesis();
+        let snapshot = serde_json::to_vec_pretty(&genesis).unwrap();
+        fs::write(&snapshot_path, &snapshot).unwrap();
+
+        let branch = |recipient: &str| {
+            let mut chain = genesis.clone();
+            let timestamp = GENESIS_TIMESTAMP + 30;
+            let mut block =
+                build_candidate_block(&chain, vec![], recipient.to_string(), None, timestamp)
+                    .unwrap();
+            block.mine_block(block.difficulty);
+            chain.add_received_block(block).unwrap();
+            chain
+        };
+        let first = branch("first");
+        let replacement = branch("replacement");
+        save_chain_update(&first, 1, path).unwrap();
+        let first_entry = fs::read(&journal).unwrap();
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&journal)
+            .unwrap()
+            .write_all(b"{\"incomplete\":")
+            .unwrap();
+
+        assert_eq!(
+            Blockchain::load(path).unwrap().latest_block().hash,
+            first.latest_block().hash
+        );
+        save_chain_update(&replacement, 1, path).unwrap();
+        assert!(fs::read(&journal).unwrap().starts_with(&first_entry));
+        assert_eq!(fs::read(&snapshot_path).unwrap(), snapshot);
+        let reloaded = Blockchain::load(path).unwrap();
+        assert_eq!(
+            reloaded.latest_block().hash,
+            replacement.latest_block().hash
+        );
+        assert_eq!(reloaded.current_supply(), replacement.current_supply());
+        fs::remove_file(journal).unwrap();
+        fs::remove_file(snapshot_path).unwrap();
+        fs::remove_dir(testing_dir).unwrap();
+    }
+
+    #[test]
+    fn block_sync_uses_the_shared_ancestor_and_bounds_each_batch() {
+        let mut remote = blockchain_with_genesis();
+        let genesis = remote.latest_block().clone();
+        for height in 1..=(BLOCK_SYNC_BATCH_SIZE + 1) {
+            remote.chain.push(Block {
+                hash: height.to_string(),
+                ..genesis.clone()
+            });
+        }
+        let mut local = blockchain_with_genesis();
+        local.chain.push(Block {
+            hash: "fork".to_string(),
+            ..genesis
+        });
+        let first = remote.missing_blocks(&local.block_locator()).unwrap();
+        assert_eq!(first.anchor, 0);
+        assert_eq!(first.blocks.len(), BLOCK_SYNC_BATCH_SIZE);
+        assert!(first.more);
+        let anchor = first.blocks.last().unwrap().hash.clone();
+        let last = remote
+            .missing_blocks(&[(BLOCK_SYNC_BATCH_SIZE, anchor)])
+            .unwrap();
+        assert_eq!(last.blocks.len(), 1);
+        assert!(!last.more);
+        assert!(remote
+            .missing_blocks(&remote.block_locator())
+            .unwrap()
+            .blocks
+            .is_empty());
+        assert!(remote
+            .missing_blocks(&[(0, "different genesis".to_string())])
+            .is_none());
     }
 
     #[test]
@@ -4016,6 +4380,31 @@ mod tests {
         );
 
         assert!(blockchain.add_received_block(block).is_err());
+    }
+
+    #[test]
+    fn reward_only_candidate_is_valid_at_continuous_mining_activation() {
+        let blockchain = blockchain_with_genesis();
+        let timestamp = CONTINUOUS_MINING_START_TIMESTAMP;
+        let build = |timestamp| {
+            build_candidate_block(
+                &blockchain,
+                vec![],
+                "miner".to_string(),
+                Some("192.0.2.1:7101".to_string()),
+                timestamp,
+            )
+        };
+
+        assert!(build(timestamp - 1).is_err());
+        let mut block = build(timestamp).expect("reward-only candidate should be built");
+        block.mine_block(block.difficulty);
+        let reward = blockchain.allowed_reward_for_next_block();
+
+        assert_eq!(block.transactions.len(), 1);
+        assert!(!block.is_valid(block.difficulty, reward, timestamp - 1));
+        assert!(block.is_valid(block.difficulty, reward, timestamp));
+        assert!(!block.is_valid(block.difficulty, reward + 1.0, timestamp));
     }
 
     #[test]

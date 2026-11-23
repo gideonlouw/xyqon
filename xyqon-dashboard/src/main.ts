@@ -131,7 +131,7 @@ type FirebaseRuntime = {
   serverTimestamp: () => unknown;
 };
 
-type Page = 'home' | 'run-a-node' | 'dashboard' | 'explorer' | 'community' | 'developers' | 'clothing';
+type Page = 'home' | 'run-a-node' | 'how-to' | 'dashboard' | 'explorer' | 'community' | 'developers' | 'clothing';
 
 type TranslationLanguage = {
   code: string;
@@ -299,6 +299,7 @@ const translationLanguages: TranslationLanguage[] = [
 const seoByPage: Record<Page, SeoConfig> = {
   home: { title: 'XYQON | Open Blockchain Network', description: 'Discover XYQON, run an independent blockchain node, inspect the live network, or build wallets, coins, NFTs, and apps with JavaScript.', path: '/', index: true },
   'run-a-node': { title: 'Run a XYQON Node | Linux Setup Guide', description: 'Join the XYQON peer-to-peer network with this practical Linux node setup guide, including ports, peers, synchronization, and mining preparation.', path: '/run-a-node', index: true },
+  'how-to': { title: 'How to Mine and Send XYQON | Getting Started', description: 'Create a wallet, prepare a miner, earn a block reward, and send your first XYQON payment. Includes release requirements and upgrade guidance.', path: '/how-to', index: true },
   developers: { title: 'Build with JavaScript | XYQON Developer Guide', description: 'Install the XYQON npm client, create a wallet, receive funds, send a transaction, and build coins, NFTs, games, and community tools.', path: '/developers', index: true },
   dashboard: { title: 'Live XYQON Network Dashboard', description: 'Monitor live XYQON nodes, consensus height, circulating supply, recent blocks, public addresses, coins, NFTs, and network activity.', path: '/dashboard', index: true },
   explorer: { title: 'XYQON Block Explorer', description: 'Search the XYQON blockchain by public address, block height, block hash, or transaction ID and inspect recent confirmed activity.', path: '/explorer', index: true },
@@ -317,6 +318,7 @@ const seoByPage: Record<Page, SeoConfig> = {
           <span>Xyqon</span>
         </a>
         <div class="nav-links">
+          <a href="/how-to" (click)="navigate($event, 'how-to')">How-To Guide</a>
           <a href="/run-a-node" (click)="navigate($event, 'run-a-node')">Run a Node</a>
           <a href="/developers" (click)="navigate($event, 'developers')">Build with JavaScript</a>
           <a href="/dashboard" (click)="navigate($event, 'dashboard')">Dashboard</a>
@@ -434,6 +436,55 @@ const seoByPage: Record<Page, SeoConfig> = {
           </a>
         </section>
 
+      }
+
+      @if (page() === 'how-to') {
+        <section class="page-intro node-guide-intro">
+          <h1>Mine XYQON and send your first payment</h1>
+          <p>You can start with an empty wallet. When the network accepts a block you mine, it credits the reward to your wallet. That reward can fund your first payment and its transaction fee.</p>
+          <div class="hero-actions">
+            <a class="primary-action" href="https://github.com/gideonlouw/xyqon/releases">Check signed releases</a>
+            <a class="secondary-action" href="/explorer" (click)="navigate($event, 'explorer')">Open block explorer</a>
+          </div>
+        </section>
+
+        <section class="package-docs-layout node-guide" aria-label="Mining and payment setup">
+          <aside class="package-summary">
+            <h2>Release requirements</h2>
+            <p>This guide uses version 0.5.0 or later. Wait for a signed release and the network activation announcement before relying on mining with an empty mempool.</p>
+            <p>The one-minute target is a network-wide average. Your first reward depends on how much mining power you contribute and when you find an accepted block.</p>
+            <nav class="package-links" aria-label="Operator resources">
+              <a href="/run-a-node" (click)="navigate($event, 'run-a-node')">Linux node guide</a>
+              <a href="/dashboard" (click)="navigate($event, 'dashboard')">Live network dashboard</a>
+              <a href="https://github.com/gideonlouw/xyqon/blob/main/README.md#peer-list">Peer setup</a>
+            </nav>
+          </aside>
+
+          <article class="package-readme">
+            <section>
+              <h2>1. Download and prepare the miner</h2>
+              <p>Download the signed binary for Windows or Linux from GitHub Releases. Verify its checksum and signature using the <a href="https://github.com/gideonlouw/xyqon#signed-releases">release verification instructions</a>. Put the binary on your PATH, or run it from its folder as <code>./xyqon</code> on Linux or <code>.&#92;xyqon.exe</code> in PowerShell.</p>
+              <p>Put a verified copy of the live chain snapshot and a list of reachable peers in your working directory as <code>xyqon-chain.json</code> and <code>peers.txt</code>. Use the bootstrap files announced for your network. The miner loads the snapshot and syncs from its peers. If your snapshot comes with a block journal, keep both files together.</p>
+            </section>
+            <section>
+              <h2>2. Create a wallet and start mining</h2>
+              <pre><code>xyqon wallet new --name MyMiner --out miner.wallet.json
+xyqon mine --wallet miner.wallet.json --chain xyqon-chain.json --peers-file peers.txt</code></pre>
+              <p>Back up <code>miner.wallet.json</code> securely and keep it private. Share only your public key. Before continuous mining activates, a block requires a pending transaction. After activation, miners can earn rewards even when nobody is sending payments.</p>
+            </section>
+            <section>
+              <h2>3. Check your reward and send XYQON</h2>
+              <p>Once your block is accepted, check the balance in a second terminal. Replace <code>RECIPIENT_PUBLIC_KEY</code> with the recipient’s public key. A payment of 1 XYQON requires 1.001 XYQON with the default fee.</p>
+              <pre><code>xyqon wallet balance --wallet miner.wallet.json --chain xyqon-chain.json
+xyqon submit --wallet miner.wallet.json --chain xyqon-chain.json --peers-file peers.txt --to RECIPIENT_PUBLIC_KEY --amount 1</code></pre>
+              <p>Look up the transaction ID in the block explorer. A pending payment gains its first confirmation when a miner includes it in an accepted block.</p>
+            </section>
+            <section>
+              <h2>Upgrading an existing node</h2>
+              <p>Rehearse the upgrade on an isolated copy of the chain. For a live upgrade, stop the service and back up the chain snapshot and its <code>.blocks.jsonl</code> journal, if present, as a pair. Upgrade one server at a time and compare its chain tip with the other nodes before moving on. Complete the rollout before continuous mining activates because older nodes reject reward-only blocks.</p>
+            </section>
+          </article>
+        </section>
       }
 
       @if (page() === 'run-a-node') {
@@ -1655,7 +1706,7 @@ class App {
 
   private routeFromPath() {
     const path = window.location.pathname.replace(/^\/+/, '').split('/')[0];
-    if (path === 'run-a-node') {
+    if (path === 'run-a-node' || path === 'how-to') {
       return path;
     }
     if (path === 'dashboard' || path === 'explorer' || path === 'community' || path === 'developers' || path === 'clothing') {

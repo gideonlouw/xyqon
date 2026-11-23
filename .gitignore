@@ -5,6 +5,7 @@
 *.wallet.json
 wallet.json
 xyqon-chain.json
+*.blocks.jsonl
 *.log
 .upload-work*
 node_modules/

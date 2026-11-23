@@ -322,9 +322,13 @@ xyqon mine \
   --chain /var/lib/xyqon/xyqon-chain.json
 ```
 
-The miner keeps syncing with peers, relays valid network messages, and tries to mine when transactions are waiting. The reward goes to whichever miner finds and broadcasts the accepted block. Mined blocks must include at least one normal transaction.
+The miner keeps syncing with peers and includes valid pending transactions when available. The reward goes to the miner whose block is accepted.
 
-Miners do not create empty reward-only blocks. If logs show `No pending transactions; waiting for work`, submit a signed transaction first; the next block will be mined only when there is work in the mempool.
+Version 0.5.0 is scheduled to activate continuous mining on **25 November 2026 at 00:00 UTC (02:00 SAST)**. From activation, miners can produce coinbase-only blocks when the mempool is empty, so earlier payments can gain confirmations during quiet periods. The 60-second difficulty target is an average target. Upgrade all nodes and miners before activation because older nodes reject the new coinbase-only blocks. Rehearse the upgrade on an isolated copy of the chain before rolling it out.
+
+Version 0.5.0 (protocol 5) saves new blocks to an append-only journal named `<chain>.blocks.jsonl` beside the existing chain snapshot. The node opens existing snapshots directly and creates the journal on the next chain update. Back up and restore the snapshot and its journal together. Use one running node or miner per chain path.
+
+Protocol 5 peers synchronize from their newest shared ancestor in batches of up to 128 blocks. Peers advertising older protocol versions still use whole-chain synchronization. The journal retains history, including superseded blocks after a reorganization, and does not prune old data.
 
 The default mempool file is based on the chain path:
 

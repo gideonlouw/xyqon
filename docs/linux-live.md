@@ -219,7 +219,9 @@ xyqon mine \
   --chain /var/lib/xyqon/xyqon-chain.json
 ```
 
-Use the `node` service for always-on relay nodes. Use `mine` only on servers that should compete for block rewards. Miners wait for pending transactions, and mined blocks must include at least one normal transaction.
+Use the `node` service for always-on relay nodes. Use `mine` only on servers that should compete for block rewards. Continuous mining is scheduled to activate on 25 November 2026 at 00:00 UTC (02:00 SAST).
+
+With version 0.5.0, run only one node or miner per chain path. For a consistent file backup, stop that service and copy both `xyqon-chain.json` and `xyqon-chain.json.blocks.jsonl` if the journal exists. Restore them as a pair before restarting.
 
 The mempool is persisted beside the chain by default:
 
