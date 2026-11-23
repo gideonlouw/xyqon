@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 const INITIAL_DIFFICULTY: usize = 4;
 const MIN_DIFFICULTY: usize = 1;
+const MAX_DIFFICULTY: usize = 64;
 const TARGET_BLOCK_TIME_SECONDS: i64 = 60;
 const LEGACY_TARGET_BLOCK_TIME_SECONDS: i64 = 30;
 const DIFFICULTY_WINDOW_BLOCKS: usize = 10;
@@ -40,7 +41,7 @@ const PERMISSIONLESS_MINING_HEIGHT: u64 = 270;
 const DEFAULT_XYQON_TRANSACTION_FEE: f64 = 0.001;
 const SOFTWARE_VERSION: &str = env!("CARGO_PKG_VERSION");
 const BLOCK_SYNC_PROTOCOL_VERSION: u32 = 5;
-const PROTOCOL_VERSION: u32 = BLOCK_SYNC_PROTOCOL_VERSION;
+const PROTOCOL_VERSION: u32 = 6;
 const BLOCK_SYNC_BATCH_SIZE: usize = 128;
 const UPGRADE_QUORUM: usize = 2;
 const TRUSTED_PUBLIC_MINER_REWARD_WALLETS: [(&str, &str); 3] = [
@@ -878,6 +879,7 @@ impl Block {
         }
         self.hash == self.calculate_hash()
             && self.difficulty == expected_difficulty
+            && (MIN_DIFFICULTY..=MAX_DIFFICULTY).contains(&self.difficulty)
             && self.hash.starts_with(&"0".repeat(expected_difficulty))
             && self.has_valid_transactions(expected_reward)
     }
@@ -1233,7 +1235,9 @@ impl Blockchain {
                 return false;
             }
 
-            if current.previous_hash != previous.hash {
+            if previous.index.checked_add(1) != Some(current.index)
+                || current.previous_hash != previous.hash
+            {
                 return false;
             }
 
@@ -1351,12 +1355,25 @@ impl Blockchain {
         })
     }
 
-    fn chain_score(&self) -> u128 {
-        self.chain
-            .iter()
-            .skip(1)
-            .map(|block| 1_u128 << block.difficulty.min(63))
-            .sum()
+    fn chain_score(&self) -> [u64; 5] {
+        // A block needs 2^(4*difficulty) expected attempts. Five 64-bit
+        // words hold the sum for any u64 number of difficulty-64 blocks.
+        // Store the most significant word first so array ordering compares work.
+        let mut total = [0_u64; 5];
+        for block in self.chain.iter().skip(1) {
+            let bits = 4 * block.difficulty;
+            let word = total.len() - 1 - bits / u64::BITS as usize;
+            let mut work = 1_u64 << (bits % u64::BITS as usize);
+            for limb in total[..=word].iter_mut().rev() {
+                let (sum, carry) = limb.overflowing_add(work);
+                *limb = sum;
+                if !carry {
+                    break;
+                }
+                work = 1;
+            }
+        }
+        total
     }
 }
 
@@ -3982,6 +3999,11 @@ fn build_candidate_block(
         );
     }
     let difficulty = expected_difficulty_for_next_block(&blockchain.chain, timestamp);
+    if !(MIN_DIFFICULTY..=MAX_DIFFICULTY).contains(&difficulty) {
+        return Err(format!(
+            "expected difficulty {difficulty} is outside the SHA-256 range"
+        ));
+    }
     Ok(Block::candidate(
         next_height,
         timestamp,
@@ -4166,7 +4188,7 @@ MINING:
   Historical trusted miner rules still apply to older blocks below height 270.
   Each mined block receives one coinbase reward transaction containing the block reward plus native XYQON fees.
   The initial reward is 10.0 XYQON and halves every 100,000 blocks.
-  Difficulty adjusts dynamically to target one block every 30 seconds.
+  Difficulty adjusts dynamically to target one block every 60 seconds.
   When --wallet is used, the reward is paid to that wallet's public key.
   Total coin supply is capped at 67,000,000 XYQON.
   If remaining supply is less than the scheduled reward, only the remaining supply can be minted.
@@ -4936,6 +4958,56 @@ mod tests {
         block.miner_peer = Some("192.0.2.1:7101".to_string());
         assert!(block.has_known_public_miner(&peers));
         assert!(block.has_expected_public_miner_reward(&registry));
+    }
+
+    #[test]
+    fn shorter_branch_with_more_expected_hashing_work_wins() {
+        let mut stronger = blockchain_with_genesis();
+        let mut longer = stronger.clone();
+        let scoring_block = |difficulty| Block {
+            difficulty,
+            ..genesis_block()
+        };
+        stronger.chain.push(scoring_block(2));
+        longer.chain.extend((0..3).map(|_| scoring_block(1)));
+
+        assert_eq!(stronger.chain_score(), [0, 0, 0, 0, 256]);
+        assert_eq!(longer.chain_score(), [0, 0, 0, 0, 48]);
+        assert!(longer.prefers(&stronger));
+        assert!(!stronger.prefers(&longer));
+    }
+
+    #[test]
+    fn chain_work_accumulates_across_words_without_saturating() {
+        let mut chain = blockchain_with_genesis();
+        let block = |difficulty| Block {
+            difficulty,
+            ..genesis_block()
+        };
+        chain.chain.extend((0..16).map(|_| block(15)));
+        assert_eq!(chain.chain_score(), [0, 0, 0, 1, 0]);
+        chain
+            .chain
+            .extend([block(32), block(63), block(64), block(64)]);
+        assert_eq!(chain.chain_score(), [2, 1 << 60, 1, 1, 0]);
+    }
+
+    #[test]
+    fn full_chain_validation_rejects_a_skipped_height() {
+        let mut chain = blockchain_with_genesis();
+        let previous = chain.latest_block();
+        let timestamp = previous.timestamp + 60;
+        let difficulty = expected_difficulty_for_next_block(&chain.chain, timestamp);
+        chain.chain.push(Block::new(
+            previous.index + 2,
+            timestamp,
+            difficulty,
+            vec![Transaction::coinbase("miner", INITIAL_MINING_REWARD)],
+            previous.hash.clone(),
+            None,
+        ));
+        chain.recalculate_circulating_supply();
+        assert!(!chain.is_valid());
     }
 
     #[test]

@@ -207,6 +207,15 @@ that the other nodes accept the same tip and that a fresh relay can sync it
 from genesis. Publish the release, activation height, and independently mined
 block hash when the corresponding public checks succeed.
 
+### Upgrade chain selection to protocol 6
+
+Version 0.6.0 uses the corrected cumulative chain-work rule as soon as it starts. Versions 0.5.0 and 0.6.0 can sync with each other, but they can choose different tips during a fork. Schedule a common maintenance window with node operators.
+
+1. Stop all miners to pause new block production, then verify that the three nodes agree on both height and tip hash. Record that shared tip as the rollback checkpoint.
+2. Stop the relay services and back up the chain snapshot and block journal as a pair. Keep the previous binary and configuration. If mining is open to independent operators, coordinate the same window with them.
+3. Replace the binaries and check that `xyqon version` reports 0.6.0 and protocol 6. Start the relays and check that their tips agree with the recorded checkpoint before restarting mining. On a server that runs the miner as its only service, start it after upgrading all three servers.
+4. Verify that all peers accept and report the same next block. If a tip differs, pause mining and investigate before resuming.
+
 ## 12. Run A Miner
 
 ```bash

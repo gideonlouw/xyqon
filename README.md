@@ -330,6 +330,8 @@ Version 0.5.0 (protocol 5) saves new blocks to an append-only journal named `<ch
 
 Protocol 5 peers synchronize from their newest shared ancestor in batches of up to 128 blocks. Peers advertising older protocol versions still use whole-chain synchronization. The journal retains history, including superseded blocks after a reorganization, and does not prune old data.
 
+Version 0.6.0 (protocol 6) selects the chain with the greatest cumulative expected hashing work. For each required hexadecimal zero, a block contributes 16 times as much work. The lower tip hash still breaks exact work ties. Existing block hashes, transaction formats, and the mining target are compatible with this change. The new scoring rule takes effect when the upgraded binary starts, so coordinate the upgrade across all operators. Follow the [chain selection upgrade steps](docs/linux-live.md#upgrade-chain-selection-to-protocol-6).
+
 The default mempool file is based on the chain path:
 
 ```text

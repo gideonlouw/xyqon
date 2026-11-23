@@ -330,7 +330,6 @@ const seoByPage: Record<Page, SeoConfig> = {
       <section class="language-bar" aria-label="Language translation">
         <div>
           <strong>Read XYQON in your language</strong>
-          <span>Translate the page you are viewing with Google Translate.</span>
         </div>
         <label>
           <span class="visually-hidden">Choose a language</span>
